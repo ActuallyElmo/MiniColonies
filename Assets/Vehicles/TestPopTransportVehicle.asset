@@ -1,0 +1,21 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 06809eca0e2a9a74f873c2591bea61ea, type: 3}
+  m_Name: TestPopTransportVehicle
+  m_EditorClassIdentifier: 
+  vehicleName: 
+  vehiclePrefab: {fileID: 8014586108714606, guid: 4ac341fda79d7194398715671f9147d3, type: 3}
+  maximumVehicleSpeed: 1
+  isLongVehicle: 0
+  isOffroadVehicle: 0
+  vehicleSpaceUsed: 0
+  amountOfPopsTransported: 0
