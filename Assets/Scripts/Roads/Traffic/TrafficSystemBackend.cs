@@ -49,7 +49,11 @@ public class TrafficSystemBackend : MonoBehaviour
         List<RoadSegmentPayload> segmentsToProcess = ExtractRoadSegments();
 
         // 2. Queue the heavy generation task
-        TrafficGenerationTask task = new TrafficGenerationTask(segmentsToProcess);
+        int smoothingIterations = 3;
+        RoadVisualSystem rvs = FindFirstObjectByType<RoadVisualSystem>();
+        if (rvs != null) smoothingIterations = rvs.smoothingIterations;
+
+        TrafficGenerationTask task = new TrafficGenerationTask(segmentsToProcess, smoothingIterations);
         SimulationTaskManager.Instance.EnqueueTask(task);
     }
 

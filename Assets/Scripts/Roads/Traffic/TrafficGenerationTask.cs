@@ -76,9 +76,12 @@ public class TrafficGenerationTask : ISimulationTask
 
     private enum TurnType { UTurn, Left, Straight, Right }
 
-    public TrafficGenerationTask(List<RoadSegmentPayload> segments)
+    private int _smoothingIterations;
+
+    public TrafficGenerationTask(List<RoadSegmentPayload> segments, int smoothingIterations = 3)
     {
         _segmentsToProcess = segments;
+        _smoothingIterations = smoothingIterations;
     }
 
     public bool Process(Stopwatch timer, float maxMillisecondsPerFrame)
@@ -133,7 +136,8 @@ public class TrafficGenerationTask : ISimulationTask
                 startCells = _startCells,
                 endCells = _endCells,
                 outEdges = _generatedEdges,
-                outWaypoints = _generatedWaypoints
+                outWaypoints = _generatedWaypoints,
+                smoothingIterations = _smoothingIterations
             };
 
             _jobHandle = job.Schedule();
@@ -551,6 +555,7 @@ public class TrafficGenerationTask : ISimulationTask
         [ReadOnly] public NativeArray<RoadTypeData> roadTypes;
         [ReadOnly] public NativeArray<int2> startCells;
         [ReadOnly] public NativeArray<int2> endCells;
+        public int smoothingIterations;
 
         public NativeList<EdgeData> outEdges;
         public NativeList<float3> outWaypoints;
@@ -572,6 +577,43 @@ public class TrafficGenerationTask : ISimulationTask
                 
                 bool isClosedLoop = math.distance(centerlines[startIdx], centerlines[startIdx + count - 1]) < 0.01f;
 
+                // --- NEW LOGIC: Smooth Centerline FIRST ---
+                smoothedPoints.Clear();
+                if (isClosedLoop && count > 0) 
+                {
+                    for (int p = 0; p < count - 1; p++) smoothedPoints.Add(centerlines[startIdx + p]);
+                }
+                else
+                {
+                    for (int p = 0; p < count; p++) smoothedPoints.Add(centerlines[startIdx + p]);
+                }
+
+                // Apply Chaikin to Centerline
+                for (int iter = 0; iter < smoothingIterations; iter++) 
+                {
+                    if (smoothedPoints.Length < 3) break;
+                    tempLoop.Clear();
+                    
+                    if (!isClosedLoop) tempLoop.Add(smoothedPoints[0]);
+                    
+                    int loopCount = smoothedPoints.Length - (isClosedLoop ? 0 : 1);
+                    for (int sp = 0; sp < loopCount; sp++)
+                    {
+                        float3 p0 = smoothedPoints[sp];
+                        float3 p1 = smoothedPoints[(sp + 1) % smoothedPoints.Length];
+                        tempLoop.Add(math.lerp(p0, p1, 0.25f));
+                        tempLoop.Add(math.lerp(p0, p1, 0.75f));
+                    }
+                    
+                    if (!isClosedLoop) tempLoop.Add(smoothedPoints[smoothedPoints.Length - 1]);
+                    
+                    smoothedPoints.Clear();
+                    smoothedPoints.AddRange(tempLoop.AsArray());
+                }
+
+                if (isClosedLoop && smoothedPoints.Length > 0) smoothedPoints.Add(smoothedPoints[0]);
+                // --- END SMOOTH CENTERLINE ---
+
                 for (int lane = 0; lane < totalLanes; lane++)
                 {
                     bool isReverse = rt.isTwoWay && (lane >= rt.lanesPerWay);
@@ -585,29 +627,30 @@ public class TrafficGenerationTask : ISimulationTask
 
                     coarsePoints.Clear();
 
-                    for (int p = 0; p < count; p++)
+                    int smoothedCount = smoothedPoints.Length;
+                    for (int p = 0; p < smoothedCount; p++)
                     {
                         float3 forward = float3.zero;
                         float miterScale = 1.0f;
                         float3 dirIn = float3.zero, dirOut = float3.zero;
 
                         if (p == 0) {
-                            if (isClosedLoop) {
-                                dirIn = math.normalize(centerlines[startIdx] - centerlines[startIdx + count - 2]);
-                                dirOut = math.normalize(centerlines[startIdx + 1] - centerlines[startIdx]);
+                            if (isClosedLoop && smoothedCount >= 3) {
+                                dirIn = math.normalize(smoothedPoints[0] - smoothedPoints[smoothedCount - 2]);
+                                dirOut = math.normalize(smoothedPoints[1] - smoothedPoints[0]);
                             } else {
-                                forward = math.normalize(centerlines[startIdx + 1] - centerlines[startIdx]);
+                                forward = smoothedCount > 1 ? math.normalize(smoothedPoints[1] - smoothedPoints[0]) : new float3(0, 0, 1);
                             }
-                        } else if (p == count - 1) {
-                            if (isClosedLoop) {
-                                dirIn = math.normalize(centerlines[startIdx + count - 1] - centerlines[startIdx + count - 2]);
-                                dirOut = math.normalize(centerlines[startIdx + 1] - centerlines[startIdx]);
+                        } else if (p == smoothedCount - 1) {
+                            if (isClosedLoop && smoothedCount >= 3) {
+                                dirIn = math.normalize(smoothedPoints[smoothedCount - 1] - smoothedPoints[smoothedCount - 2]);
+                                dirOut = math.normalize(smoothedPoints[1] - smoothedPoints[0]);
                             } else {
-                                forward = math.normalize(centerlines[startIdx + p] - centerlines[startIdx + p - 1]);
+                                forward = smoothedCount > 1 ? math.normalize(smoothedPoints[p] - smoothedPoints[p - 1]) : new float3(0, 0, 1);
                             }
                         } else {
-                            dirIn = math.normalize(centerlines[startIdx + p] - centerlines[startIdx + p - 1]);
-                            dirOut = math.normalize(centerlines[startIdx + p + 1] - centerlines[startIdx + p]);
+                            dirIn = math.normalize(smoothedPoints[p] - smoothedPoints[p - 1]);
+                            dirOut = math.normalize(smoothedPoints[p + 1] - smoothedPoints[p]);
                         }
 
                         if (math.lengthsq(dirIn) > 0.5f && math.lengthsq(dirOut) > 0.5f)
@@ -625,57 +668,29 @@ public class TrafficGenerationTask : ISimulationTask
                         if (math.lengthsq(forward) < 0.001f) forward = new float3(0, 0, 1);
 
                         float3 right = math.normalize(math.cross(new float3(0, 1, 0), forward));
-                        float3 offsetPos = centerlines[startIdx + p] + (right * (offsetDist * miterScale));
+                        float3 offsetPos = smoothedPoints[p] + (right * (offsetDist * miterScale));
                         coarsePoints.Add(offsetPos);
                     }
 
-                    smoothedPoints.Clear();
-                    if (isClosedLoop && coarsePoints.Length > 0) coarsePoints.RemoveAt(coarsePoints.Length - 1);
-                    smoothedPoints.AddRange(coarsePoints.AsArray());
-                    
-                    for (int iter = 0; iter < 3; iter++) 
-                    {
-                        if (smoothedPoints.Length < 3) break;
-                        tempLoop.Clear();
-                        
-                        if (!isClosedLoop) tempLoop.Add(smoothedPoints[0]);
-                        
-                        int loopCount = smoothedPoints.Length - (isClosedLoop ? 0 : 1);
-                        for (int sp = 0; sp < loopCount; sp++)
-                        {
-                            float3 p0 = smoothedPoints[sp];
-                            float3 p1 = smoothedPoints[(sp + 1) % smoothedPoints.Length];
-                            tempLoop.Add(math.lerp(p0, p1, 0.25f));
-                            tempLoop.Add(math.lerp(p0, p1, 0.75f));
-                        }
-                        
-                        if (!isClosedLoop) tempLoop.Add(smoothedPoints[smoothedPoints.Length - 1]);
-                        
-                        smoothedPoints.Clear();
-                        smoothedPoints.AddRange(tempLoop.AsArray());
-                    }
-
-                    if (isClosedLoop) smoothedPoints.Add(smoothedPoints[0]); 
-
                     if (isReverse)
                     {
-                        for (int rev = 0; rev < smoothedPoints.Length / 2; rev++)
+                        for (int rev = 0; rev < coarsePoints.Length / 2; rev++)
                         {
                             int idxA = rev;
-                            int idxB = smoothedPoints.Length - 1 - rev;
-                            float3 tempSwap = smoothedPoints[idxA];
-                            smoothedPoints[idxA] = smoothedPoints[idxB];
-                            smoothedPoints[idxB] = tempSwap;
+                            int idxB = coarsePoints.Length - 1 - rev;
+                            float3 tempSwap = coarsePoints[idxA];
+                            coarsePoints[idxA] = coarsePoints[idxB];
+                            coarsePoints[idxB] = tempSwap;
                         }
                     }
 
                     int waypointStartIndex = outWaypoints.Length;
-                    outWaypoints.AddRange(smoothedPoints.AsArray());
+                    outWaypoints.AddRange(coarsePoints.AsArray());
 
                     outEdges.Add(new EdgeData
                     {
                         startWaypointIndex = waypointStartIndex,
-                        waypointCount = smoothedPoints.Length,
+                        waypointCount = coarsePoints.Length,
                         laneIndex = localIndex,
                         totalLanes = totalLanes,
                         lanesPerWay = rt.lanesPerWay,

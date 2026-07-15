@@ -53,13 +53,14 @@ public class VehicleAI : MonoBehaviour
 
     public void DispatchTo(Building target, RoadNetwork network)
     {
-        Debug.Log("dispatch");
         if (_cachedTargetBuilding != target || _activeNetwork != network)
         {
             _cachedTargetBuilding = target;
             _activeNetwork = network;
             ClearPathCaches();
         }
+
+        // Debug.Log("dispatch");
 
         targetBuilding = target;
         currentState = VehicleState.Outbound;
@@ -98,7 +99,7 @@ public class VehicleAI : MonoBehaviour
     {
         currentState = VehicleState.Inbound;
 
-        Debug.Log("returnhome");
+        // Debug.Log("returnhome");
         
         Vector2Int exitPort = targetBuilding.GetClosestPort(PortType.Exit, _activeNetwork, homeBuilding.originCell);
         TeleportToPort(exitPort);
@@ -118,7 +119,7 @@ public class VehicleAI : MonoBehaviour
                 }
                 else
                 {
-                    Debug.Log("nopath");
+                    // Debug.Log("nopath");
                     RecallAndDeactivate();
                 }
             });

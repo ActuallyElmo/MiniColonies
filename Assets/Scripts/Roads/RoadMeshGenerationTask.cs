@@ -116,58 +116,16 @@ public class RoadMeshGenerationTask : ISimulationTask
             {
                 var smoothedNodes = ApplyChaikin(path.nodes, _vis.smoothingIterations);
 
-                // NEW: Crisp Elevation Mapping & Anti-Clipping
+                // EXACT Terrain Height Mapping:
+                // Instead of projecting onto linear segments, we sample the exact WorldManager terrain.
+                // This guarantees the visual road mesh perfectly traces the ground geometry, including
+                // diagonal cliffs and curved corners, completely eliminating ground clipping.
                 for (int i = 0; i < smoothedNodes.Count; i++)
                 {
                     PathNodeNative n = smoothedNodes[i];
-                    float closestDist = float.MaxValue;
-                    float targetY = n.position.y;
-                    
-                    for (int j = 0; j < path.nodes.Count - 1; j++)
-                    {
-                        Vector3 origA = path.nodes[j].position;
-                        Vector3 origB = path.nodes[j+1].position;
-                        Vector3 p = n.position; 
-                        
-                        // 2D Projection (Ignore Y to strictly match against the rigid grid)
-                        float ax = origA.x, az = origA.z;
-                        float bx = origB.x, bz = origB.z;
-                        float px = p.x, pz = p.z;
-                        
-                        float dx = bx - ax;
-                        float dz = bz - az;
-                        float lengthSqr = dx * dx + dz * dz;
-                        
-                        float t = 0f;
-                        if (lengthSqr > 0.0001f)
-                        {
-                            t = ((px - ax) * dx + (pz - az) * dz) / lengthSqr;
-                            t = Mathf.Clamp01(t); // Lock strictly to the bounds of the single cell
-                        }
-                        
-                        float projX = ax + t * dx;
-                        float projZ = az + t * dz;
-                        
-                        float distSqr = (px - projX) * (px - projX) + (pz - projZ) * (pz - projZ);
-                        
-                        if (distSqr < closestDist)
-                        {
-                            closestDist = distSqr;
-                            
-                            // Force the Y elevation to be perfectly linear between the two cell centers
-                            targetY = Mathf.Lerp(origA.y, origB.y, t);
-                            
-                            // Anti-Clipping Bow: Lift the ramp slightly over the sharp voxel block corners
-                            float yDiff = Mathf.Abs(origA.y - origB.y);
-                            if (yDiff > 0.1f)
-                            {
-                                float bow = 4f * t * (1f - t); 
-                                targetY += bow * _wm.heightStep * 0.4f; 
-                            }
-                        }
-                    }
-                    
-                    n.position.y = targetY;
+                    float px = n.position.x / _wm.cellSize;
+                    float pz = n.position.z / _wm.cellSize;
+                    n.position.y = _wm.GetPhysicalHeight(px, pz) * _wm.heightStep;
                     smoothedNodes[i] = n;
                 }
 
@@ -502,9 +460,21 @@ public class RoadMeshGenerationTask : ISimulationTask
     private float3 GetForward(List<PathNodeNative> path, int i, bool isClosedLoop)
     {
         if (path.Count < 2) return new float3(0, 0, 1);
-        if (i == 0) return math.normalize(path[1].position - path[0].position);
-        if (i == path.Count - 1) return math.normalize(path[i].position - path[i - 1].position);
-        return math.normalize(path[i + 1].position - path[i - 1].position);
+        
+        if (isClosedLoop && path.Count >= 4)
+        {
+            // For a closed loop, the node before i=0 is Count-2 (since 0 and Count-1 are the same).
+            // The node after i=Count-1 is i=1.
+            int prev = (i == 0) ? path.Count - 2 : i - 1;
+            int next = (i == path.Count - 1) ? 1 : i + 1;
+            return math.normalize(path[next].position - path[prev].position);
+        }
+        else
+        {
+            if (i == 0) return math.normalize(path[1].position - path[0].position);
+            if (i == path.Count - 1) return math.normalize(path[i].position - path[i - 1].position);
+            return math.normalize(path[i + 1].position - path[i - 1].position);
+        }
     }
 
     private Vector3 GetCellWorldCenter(Vector2Int pos)

@@ -22,6 +22,7 @@ public class Building : MonoBehaviour
 
     private List<GameObject> portIcons = new List<GameObject>();
     private bool _needsPathRecalculation = false;
+    private Coroutine _routeRecalculationCoroutine;
 
     public class RouteData
     {
@@ -52,21 +53,19 @@ public class Building : MonoBehaviour
             VehicleData vData = popData.typesOfPopTransportVehiclesAllowed[0]; 
             if (vData.vehiclePrefab != null)
             {
-                StartCoroutine(SpawnVehicles(vData, 20));
+                SpawnVehicles(vData, 20);
             }
         }
     }
 
-    IEnumerator SpawnVehicles(VehicleData vehicleData, int amount)
+    private void SpawnVehicles(VehicleData vehicleData, int amount)
     {
         for(int i = 0; i < amount; i++)
         {
-            GameObject vObj = Instantiate(vehicleData.vehiclePrefab, transform.position, Quaternion.identity);
+            GameObject vObj = Instantiate(vehicleData.vehiclePrefab, transform.position, Quaternion.identity, transform);
             VehicleAI vAI = vObj.AddComponent<VehicleAI>();
             vAI.Initialize(this, vehicleData);
             spawnedVehicles.Add(vAI);
-
-            yield return new WaitForSeconds(1f);
         }
     }
 
@@ -136,7 +135,11 @@ public class Building : MonoBehaviour
         //if (!_needsPathRecalculation) return;
         //_needsPathRecalculation = false;
         
-        StartCoroutine(StaggeredRouteRecalculation());
+        if (_routeRecalculationCoroutine != null)
+        {
+            StopCoroutine(_routeRecalculationCoroutine);
+        }
+        _routeRecalculationCoroutine = StartCoroutine(StaggeredRouteRecalculation());
     }
 
     private System.Collections.IEnumerator StaggeredRouteRecalculation()
@@ -156,6 +159,7 @@ public class Building : MonoBehaviour
                     if (_needsPathRecalculation || vAI.targetBuilding != bestRoute.targetFactory)
                     {
                         vAI.Reroute(bestRoute.targetFactory, bestRoute.sharedNetwork); 
+                        yield return new WaitForSeconds(1.5f); // Throttle departures to create a natural flow
                     }
                 }
                 else 

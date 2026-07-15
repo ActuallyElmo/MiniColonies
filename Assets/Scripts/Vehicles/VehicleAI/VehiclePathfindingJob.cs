@@ -58,16 +58,19 @@ public struct VehiclePathfindingJob : IJob
             int startNodeIdx = startEdge.endNodeIndex;
             float initialCost = math.distance(StartPos, Nodes[startNodeIdx].position); // Calculate actual travel distance
 
-            records.Add(startNodeIdx, new NodeRecord
+            if (!records.ContainsKey(startNodeIdx))
             {
-                previousNodeIndex = -1,
-                edgeUsedIndex = edgeIdx,
-                initialStartEdgeIndex = edgeIdx,
-                costSoFar = initialCost, 
-                estimatedTotalCost = initialCost + math.distance(Nodes[startNodeIdx].position, TargetPos),
-                isClosed = false
-            });
-            openList.Add(startNodeIdx);
+                records.Add(startNodeIdx, new NodeRecord
+                {
+                    previousNodeIndex = -1,
+                    edgeUsedIndex = edgeIdx,
+                    initialStartEdgeIndex = edgeIdx,
+                    costSoFar = initialCost, 
+                    estimatedTotalCost = initialCost + math.distance(Nodes[startNodeIdx].position, TargetPos),
+                    isClosed = false
+                });
+                openList.Add(startNodeIdx);
+            }
         }
 
         int iterations = 0;

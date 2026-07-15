@@ -37,7 +37,7 @@ public class TrafficEdge
     public int totalLanes;
     public bool isMergeEdge;    // True if this edge exists just to switch lanes
     public bool isUTurn;
-    
+
 
     public TrafficEdge(TrafficNode start, TrafficNode end, float limit, bool intersection = false)
     {
