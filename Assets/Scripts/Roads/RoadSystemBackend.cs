@@ -5,15 +5,15 @@ using System;
 // Kept as a pure data class. (Later, for Burst, this can become a strict struct).
 public class RoadCell
 {
-    public Vector2Int gridPosition;
-    public int elevationLayer;
-    public RoadType roadType; 
+    public Vector2Int gridPosition { get; private set; }
+    public int elevationLayer { get; private set; }
+    public RoadType roadType { get; private set; }
     
-    public int connections = 0;
-    public int outConnections = 0; 
-    public int inConnections = 0;  
+    public int connections { get; private set; }
+    public int outConnections { get; private set; }
+    public int inConnections { get; private set; }
     
-    public bool isPreview = false;
+    public bool isPreview { get; private set; }
 
     public RoadCell(Vector2Int pos, int layer, RoadType type)
     {
@@ -31,6 +31,25 @@ public class RoadCell
         outConnections &= ~directionBit;
         inConnections &= ~directionBit;
     }
+
+    public void AddOutgoingConnection(int directionBit) { outConnections |= directionBit; }
+    public void AddIncomingConnection(int directionBit) { inConnections |= directionBit; }
+    public void SetRoadType(RoadType type) { roadType = type; }
+    public void SetPreview(bool preview) { isPreview = preview; }
+
+    public void RestoreAuthoringState(
+        int restoredConnections,
+        int restoredIncomingConnections,
+        int restoredOutgoingConnections,
+        RoadType restoredRoadType,
+        bool restoredPreview)
+    {
+        connections = restoredConnections;
+        inConnections = restoredIncomingConnections;
+        outConnections = restoredOutgoingConnections;
+        roadType = restoredRoadType;
+        isPreview = restoredPreview;
+    }
 }
 
 public class RoadSystemBackend : MonoBehaviour
@@ -42,13 +61,22 @@ public class RoadSystemBackend : MonoBehaviour
     public Color debugNodeColor = Color.blue;
     public Color debugLineColor = Color.cyan;
 
-    public Dictionary<Vector2Int, RoadCell> Roads { get; private set; } = new Dictionary<Vector2Int, RoadCell>();
+    private readonly Dictionary<Vector2Int, RoadCell> _roads = new Dictionary<Vector2Int, RoadCell>();
+    private readonly Dictionary<Vector2Int, IntersectionData> _intersections =
+        new Dictionary<Vector2Int, IntersectionData>();
+
+    public IReadOnlyDictionary<Vector2Int, RoadCell> Roads => _roads;
+    public int AuthoringRevision { get; private set; }
     
     public event Action<HashSet<Vector2Int>> OnChunksDirty;
     public event Action<Vector2Int> OnRoadCellChanged;
     
     private HashSet<Vector2Int> _dirtyChunksThisFrame = new HashSet<Vector2Int>();
     private WorldManager _worldManager;
+
+    // --- INTERSECTION MANAGEMENT ---
+    public IReadOnlyDictionary<Vector2Int, IntersectionData> Intersections => _intersections;
+
 
     // --- TRANSACTION & PREVIEW SYSTEM ---
     public bool IsPreviewMode { get; private set; }
@@ -92,9 +120,9 @@ public class RoadSystemBackend : MonoBehaviour
 
         foreach (var pos in _previewSnapshots.Keys)
         {
-            if (Roads.TryGetValue(pos, out RoadCell cell) && cell.isPreview)
+            if (_roads.TryGetValue(pos, out RoadCell cell) && cell.isPreview)
             {
-                cell.isPreview = false;
+                cell.SetPreview(false);
                 MarkCellDirty(pos); // Mark dirty again to trigger the permanent mesh swap
             }
         }
@@ -114,17 +142,18 @@ public class RoadSystemBackend : MonoBehaviour
 
             if (!snap.existed)
             {
-                Roads.Remove(pos);
+                _roads.Remove(pos);
             }
             else
             {
-                if (Roads.TryGetValue(pos, out RoadCell cell))
+                if (_roads.TryGetValue(pos, out RoadCell cell))
                 {
-                    cell.connections = snap.connections;
-                    cell.inConnections = snap.inConnections;
-                    cell.outConnections = snap.outConnections;
-                    cell.roadType = snap.type;
-                    cell.isPreview = snap.wasPreview;
+                    cell.RestoreAuthoringState(
+                        snap.connections,
+                        snap.inConnections,
+                        snap.outConnections,
+                        snap.type,
+                        snap.wasPreview);
                 }
             }
             MarkCellDirty(pos);
@@ -136,7 +165,7 @@ public class RoadSystemBackend : MonoBehaviour
     {
         if (!IsPreviewMode || _previewSnapshots.ContainsKey(pos)) return;
 
-        if (Roads.TryGetValue(pos, out RoadCell cell))
+        if (_roads.TryGetValue(pos, out RoadCell cell))
         {
             _previewSnapshots[pos] = new RoadCellSnapshot {
                 existed = true,
@@ -157,22 +186,22 @@ public class RoadSystemBackend : MonoBehaviour
 
     public void PlaceRoadBlock(Vector2Int cell, RoadType type)
     {
-        if (type == null || Roads.ContainsKey(cell)) return;
+        if (type == null || _roads.ContainsKey(cell)) return;
 
         SaveSnapshot(cell); // SNAPSHOT
         
         int layer = _worldManager.GetCellLayer(cell.x, cell.y);
         RoadCell newCell = new RoadCell(cell, layer, type);
         
-        if (IsPreviewMode) newCell.isPreview = true; // FLAG TEMPORARY
+        if (IsPreviewMode) newCell.SetPreview(true); // FLAG TEMPORARY
         
-        Roads.Add(cell, newCell);
+        _roads.Add(cell, newCell);
         MarkCellDirty(cell);
     }
 
     public void RemoveRoadBlock(Vector2Int cell)
     {
-        if (!Roads.TryGetValue(cell, out RoadCell roadToRemove)) return;
+        if (!_roads.TryGetValue(cell, out RoadCell roadToRemove)) return;
 
         SaveSnapshot(cell); // SNAPSHOT
 
@@ -182,28 +211,35 @@ public class RoadSystemBackend : MonoBehaviour
             if (roadToRemove.HasConnection(bit))
             {
                 Vector2Int neighborPos = GetNeighborPosition(cell, bit);
-                if (Roads.TryGetValue(neighborPos, out RoadCell neighbor))
+                if (_roads.TryGetValue(neighborPos, out RoadCell neighbor))
                 {
                     SaveSnapshot(neighborPos); // SNAPSHOT NEIGHBORS
                     int reverseBit = GetDirectionBit(neighborPos, cell);
                     neighbor.RemoveConnection(reverseBit);
                     MarkCellDirty(neighborPos); 
+                    UpdateIntersectionState(neighbor);
                 }
             }
         }
         
         MarkCellDirty(cell);
-        Roads.Remove(cell);
+        _roads.Remove(cell);
+
+        if (_intersections.TryGetValue(cell, out IntersectionData removedIntersection))
+        {
+            UnsubscribeFromIntersection(removedIntersection);
+            _intersections.Remove(cell);
+        }
     }
 
     public void UpgradeRoadBlock(Vector2Int cell, RoadType newType)
     {
-        if (Roads.TryGetValue(cell, out RoadCell road))
+        if (_roads.TryGetValue(cell, out RoadCell road))
         {
             if (road.roadType != newType)
             {
                 SaveSnapshot(cell); // SNAPSHOT
-                road.roadType = newType;
+                road.SetRoadType(newType);
                 MarkCellDirty(cell);
             }
         }
@@ -214,11 +250,11 @@ public class RoadSystemBackend : MonoBehaviour
         SaveSnapshot(from); // SNAPSHOT
         SaveSnapshot(to);   // SNAPSHOT
 
-        if (!Roads.ContainsKey(from)) PlaceRoadBlock(from, selectedRoadType);
-        if (!Roads.ContainsKey(to)) PlaceRoadBlock(to, selectedRoadType);
+        if (!_roads.ContainsKey(from)) PlaceRoadBlock(from, selectedRoadType);
+        if (!_roads.ContainsKey(to)) PlaceRoadBlock(to, selectedRoadType);
 
-        RoadCell toCell = Roads[to];
-        RoadCell fromCell = Roads[from];
+        RoadCell toCell = _roads[to];
+        RoadCell fromCell = _roads[from];
 
         int toToFromBit = GetDirectionBit(to, from);
         int fromToToBit = GetDirectionBit(from, to);
@@ -238,35 +274,65 @@ public class RoadSystemBackend : MonoBehaviour
 
             if (forward)
             {
-                fromCell.outConnections |= fromToToBit;
-                toCell.inConnections |= toToFromBit;
-                if (fromCell.roadType.isTwoWay) fromCell.inConnections |= fromToToBit;
-                if (toCell.roadType.isTwoWay) toCell.outConnections |= toToFromBit;
+                fromCell.AddOutgoingConnection(fromToToBit);
+                toCell.AddIncomingConnection(toToFromBit);
+                if (fromCell.roadType.isTwoWay) fromCell.AddIncomingConnection(fromToToBit);
+                if (toCell.roadType.isTwoWay) toCell.AddOutgoingConnection(toToFromBit);
             }
             else
             {
-                fromCell.inConnections |= fromToToBit;
-                toCell.outConnections |= toToFromBit;
-                if (fromCell.roadType.isTwoWay) fromCell.outConnections |= fromToToBit;
-                if (toCell.roadType.isTwoWay) toCell.inConnections |= toToFromBit;
+                fromCell.AddIncomingConnection(fromToToBit);
+                toCell.AddOutgoingConnection(toToFromBit);
+                if (fromCell.roadType.isTwoWay) fromCell.AddOutgoingConnection(fromToToBit);
+                if (toCell.roadType.isTwoWay) toCell.AddIncomingConnection(toToFromBit);
             }
         }
         else
         {
-            fromCell.outConnections |= fromToToBit;
-            fromCell.inConnections |= fromToToBit;
-            toCell.outConnections |= toToFromBit;
-            toCell.inConnections |= toToFromBit;
+            fromCell.AddOutgoingConnection(fromToToBit);
+            fromCell.AddIncomingConnection(fromToToBit);
+            toCell.AddOutgoingConnection(toToFromBit);
+            toCell.AddIncomingConnection(toToFromBit);
         }
 
         MarkCellDirty(from);
         MarkCellDirty(to);
+
+        UpdateIntersectionState(fromCell);
+        UpdateIntersectionState(toCell);
+    }
+
+    private void UpdateIntersectionState(RoadCell cell)
+    {
+        if (GetRoadNodeKind(cell) == RoadNodeKind.Intersection)
+        {
+            if (!_intersections.ContainsKey(cell.gridPosition))
+            {
+                RegisterIntersection(new IntersectionData(cell.gridPosition));
+            }
+
+            _intersections[cell.gridPosition].NodeKind = RoadNodeKind.Intersection;
+        }
+        else
+        {
+            if (_intersections.TryGetValue(cell.gridPosition, out IntersectionData removedIntersection))
+            {
+                UnsubscribeFromIntersection(removedIntersection);
+                _intersections.Remove(cell.gridPosition);
+            }
+        }
     }
 
     // --- INTERNAL LOGIC ---
 
     private void MarkCellDirty(Vector2Int cell)
     {
+        unchecked
+        {
+            AuthoringRevision++;
+            if (AuthoringRevision <= 0) AuthoringRevision = 1;
+        }
+
         OnRoadCellChanged?.Invoke(cell);
         if (_worldManager == null) return;
 
@@ -300,33 +366,175 @@ public class RoadSystemBackend : MonoBehaviour
         return count;
     }
 
+    public IntersectionData GetEditableIntersection(Vector2Int cell)
+    {
+        if (!_roads.TryGetValue(cell, out RoadCell roadCell)) return null;
+        if (GetRoadNodeKind(roadCell) != RoadNodeKind.Intersection) return null;
+
+        if (!_intersections.TryGetValue(cell, out IntersectionData data))
+        {
+            data = new IntersectionData(cell);
+            RegisterIntersection(data);
+        }
+
+        data.NodeKind = RoadNodeKind.Intersection;
+        return data;
+    }
+
+    public bool SetLaneConnection(Vector2Int cell, int fromDir, int fromLane, int toDir, int toLane)
+    {
+        IntersectionData data = GetEditableIntersection(cell);
+        if (data == null) return false;
+
+        data.AddCustomRule(fromDir, fromLane, toDir, toLane);
+        return true;
+    }
+
+    public bool ClearLaneConnections(Vector2Int cell)
+    {
+        IntersectionData data = GetEditableIntersection(cell);
+        if (data == null) return false;
+
+        data.ClearCustomRules();
+        data.InvalidCustomRuleCount = 0;
+        return true;
+    }
+
+    public bool SetIntersectionRuleType(Vector2Int cell, IntersectionRuleType ruleType)
+    {
+        IntersectionData data = GetEditableIntersection(cell);
+        if (data == null) return false;
+        data.RuleType = ruleType;
+        return true;
+    }
+
+    public bool SetIntersectionPriorityDirections(
+        Vector2Int cell,
+        int priorityDirectionBitA,
+        int priorityDirectionBitB)
+    {
+        IntersectionData data = GetEditableIntersection(cell);
+        if (data == null) return false;
+        data.SetPriorityDirections(priorityDirectionBitA, priorityDirectionBitB);
+        return true;
+    }
+
+    public bool SetIntersectionTrafficLightCycle(Vector2Int cell, float cycleSeconds)
+    {
+        IntersectionData data = GetEditableIntersection(cell);
+        if (data == null) return false;
+        data.TrafficLightCycleSeconds = cycleSeconds;
+        return true;
+    }
+
+    public RoadNodeKind GetRoadNodeKind(RoadCell cell)
+    {
+        int connectionCount = GetConnectionCount(cell);
+
+        if (connectionCount == 1) return RoadNodeKind.RoadEnd;
+        if (connectionCount >= 3) return RoadNodeKind.Intersection;
+
+        if (connectionCount == 2)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                int bit = 1 << i;
+                if (cell.HasConnection(bit) && HasRoadTypeOrDirectionalityChange(cell, bit))
+                {
+                    return RoadNodeKind.Transition;
+                }
+            }
+
+            return RoadNodeKind.ThroughRoad;
+        }
+
+        return RoadNodeKind.ThroughRoad;
+    }
+
+    private bool HasRoadTypeOrDirectionalityChange(RoadCell cell, int directionBit)
+    {
+        Vector2Int neighborPos = GetNeighborPosition(cell.gridPosition, directionBit);
+        if (!_roads.TryGetValue(neighborPos, out RoadCell neighbor)) return false;
+
+        int neighborConnectionCount = GetConnectionCount(neighbor);
+        if (neighborConnectionCount >= 3)
+        {
+            return false;
+        }
+
+        bool hasTypeChange =
+            GetLaneCount(cell.roadType) != GetLaneCount(neighbor.roadType) ||
+            IsTwoWay(cell.roadType) != IsTwoWay(neighbor.roadType);
+
+        int reverseBit = GetDirectionBit(neighborPos, cell.gridPosition);
+        bool canLeaveCell = (cell.outConnections & directionBit) != 0;
+        bool canEnterCell = (cell.inConnections & directionBit) != 0;
+        bool neighborCanEnter = (neighbor.inConnections & reverseBit) != 0;
+        bool neighborCanLeave = (neighbor.outConnections & reverseBit) != 0;
+        bool hasDirectionalityChange =
+            canLeaveCell != neighborCanEnter ||
+            canEnterCell != neighborCanLeave;
+
+        if (!hasTypeChange && !hasDirectionalityChange)
+        {
+            return false;
+        }
+
+        if (neighborConnectionCount != 2)
+        {
+            return true;
+        }
+
+        return cell.gridPosition.x < neighborPos.x ||
+               (cell.gridPosition.x == neighborPos.x &&
+                cell.gridPosition.y < neighborPos.y);
+    }
+
+    private int GetLaneCount(RoadType roadType)
+    {
+        if (roadType == null) return 0;
+        return roadType.isTwoWay ? roadType.lanesPerWay * 2 : roadType.lanesPerWay;
+    }
+
+    private bool IsTwoWay(RoadType roadType)
+    {
+        return roadType != null && roadType.isTwoWay;
+    }
+
     public int GetDirectionBit(Vector2Int from, Vector2Int to)
     {
-        int dx = to.x - from.x;
-        int dy = to.y - from.y;
-        if (dx == 0 && dy == 1) return 1;    if (dx == 1 && dy == 1) return 2;
-        if (dx == 1 && dy == 0) return 4;    if (dx == 1 && dy == -1) return 8;
-        if (dx == 0 && dy == -1) return 16;  if (dx == -1 && dy == -1) return 32;
-        if (dx == -1 && dy == 0) return 64;  if (dx == -1 && dy == 1) return 128;
-        return 0;
+        return RoadGridDirectionUtility.GetDirectionBit(from, to);
     }
 
     public Vector2Int GetNeighborPosition(Vector2Int pos, int bit)
     {
-        switch (bit)
+        return RoadGridDirectionUtility.GetNeighborPosition(pos, bit);
+    }
+
+    private void RegisterIntersection(IntersectionData data)
+    {
+        _intersections[data.GridPosition] = data;
+        data.Changed -= HandleIntersectionChanged;
+        data.Changed += HandleIntersectionChanged;
+    }
+
+    private void UnsubscribeFromIntersection(IntersectionData data)
+    {
+        if (data != null) data.Changed -= HandleIntersectionChanged;
+    }
+
+    private void HandleIntersectionChanged(IntersectionData data)
+    {
+        if (data != null && _intersections.ContainsKey(data.GridPosition))
         {
-            case 1: return new Vector2Int(pos.x, pos.y + 1);    case 2: return new Vector2Int(pos.x + 1, pos.y + 1);
-            case 4: return new Vector2Int(pos.x + 1, pos.y);    case 8: return new Vector2Int(pos.x + 1, pos.y - 1);
-            case 16: return new Vector2Int(pos.x, pos.y - 1);   case 32: return new Vector2Int(pos.x - 1, pos.y - 1);
-            case 64: return new Vector2Int(pos.x - 1, pos.y);   case 128: return new Vector2Int(pos.x - 1, pos.y + 1);
-            default: return pos;
+            MarkCellDirty(data.GridPosition);
         }
     }
 #if UNITY_EDITOR
     private void OnDrawGizmos()
     {
-        if (!showDebugRoads || Roads == null || _worldManager == null) return;
-        foreach (var kvp in Roads)
+        if (!showDebugRoads || _worldManager == null) return;
+        foreach (var kvp in _roads)
         {
             RoadCell cell = kvp.Value;
             float x = cell.gridPosition.x * _worldManager.cellSize + (_worldManager.cellSize * 0.5f);

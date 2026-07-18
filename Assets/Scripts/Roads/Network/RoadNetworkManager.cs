@@ -72,7 +72,12 @@ public class RoadNetworkManager : MonoBehaviour
             HashSet<Vector2Int> roadSnapshot = new HashSet<Vector2Int>(_dirtyRoadCells);
             HashSet<Building> buildingSnapshot = new HashSet<Building>(_dirtyBuildings);
             
-            Dictionary<Vector2Int, RoadCell> mapSnapshot = new Dictionary<Vector2Int, RoadCell>(RoadSystemBackend.Instance.Roads);
+            Dictionary<Vector2Int, RoadCell> mapSnapshot =
+                new Dictionary<Vector2Int, RoadCell>(RoadSystemBackend.Instance.Roads.Count);
+            foreach (KeyValuePair<Vector2Int, RoadCell> pair in RoadSystemBackend.Instance.Roads)
+            {
+                mapSnapshot.Add(pair.Key, pair.Value);
+            }
 
             _dirtyRoadCells.Clear();
             _dirtyBuildings.Clear();

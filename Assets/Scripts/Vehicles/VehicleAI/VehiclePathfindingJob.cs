@@ -13,12 +13,16 @@ public struct VehiclePathfindingJob : IJob
 
     [ReadOnly] public NativeArray<int> StartEdgeIndices;
     [ReadOnly] public NativeArray<int> EndEdgeIndices;
+    [ReadOnly] public NativeArray<float> CongestionPenalties;
+    public int VehiclePermissions;
+    public int VehicleCapabilities;
     
     public float3 StartPos;
     public float3 TargetPos;
 
     // The result output
     public NativeList<float3> ResultWaypoints;
+    public NativeList<int> ResultEdgeIndices;
 
     private struct NodeRecord
     {
@@ -43,11 +47,12 @@ public struct VehiclePathfindingJob : IJob
         {
             int edgeIdx = StartEdgeIndices[i];
             NativeTrafficEdge startEdge = Edges[edgeIdx];
+            if (!IsLegal(startEdge)) continue;
             
             // Check direct match
             for (int e = 0; e < EndEdgeIndices.Length; e++)
             {
-                if (edgeIdx == EndEdgeIndices[e])
+                if (edgeIdx == EndEdgeIndices[e] && CanTravelDirectlyOnEdge(startEdge))
                 {
                     ExtractWaypoints(edgeIdx, out records);
                     DisposeTemp(records, openList);
@@ -56,7 +61,7 @@ public struct VehiclePathfindingJob : IJob
             }
 
             int startNodeIdx = startEdge.endNodeIndex;
-            float initialCost = math.distance(StartPos, Nodes[startNodeIdx].position); // Calculate actual travel distance
+            float initialCost = GetCostFromPointToEdgeEnd(startEdge, StartPos);
 
             if (!records.ContainsKey(startNodeIdx))
             {
@@ -118,9 +123,14 @@ public struct VehiclePathfindingJob : IJob
             {
                 int outEdgeIdx = NodeOutConnections[currentNode.edgeStartIndex + i];
                 NativeTrafficEdge edge = Edges[outEdgeIdx];
+                if (!IsLegal(edge)) continue;
                 int neighborIdx = edge.endNodeIndex;
 
                 float totalEdgeCost = edge.cost;
+                if (outEdgeIdx < CongestionPenalties.Length)
+                {
+                    totalEdgeCost += CongestionPenalties[outEdgeIdx];
+                }
 
                 // Apply standard lateral merge penalty
                 if (edge.isMergeEdge)
@@ -128,18 +138,16 @@ public struct VehiclePathfindingJob : IJob
                     totalEdgeCost += edge.laneChangePenalty;
                 }
 
+                if (edge.isRoadTypeTransition)
+                {
+                    totalEdgeCost += 1.0f + (edge.transitionPriority * 0.25f);
+                }
+
                 // FIX: Only apply the massive U-Turn penalty if it's a true U-Turn.
                 if (edge.isUTurn)
                 {
                     totalEdgeCost += edge.uTurnPenalty;
                 }
-                // NEW FALLBACK: If a car is trapped in the wrong lane at an intersection, 
-                // allow it to take the correct turn but heavily tax it so it prefers proper merging.
-                else if (edge.isIntersection && edge.laneChangePenalty > 0f) 
-                {
-                    totalEdgeCost += 15.0f; // Artificial tax for a sloppy intersection merge
-                }
-
                 float newCostSoFar = currentRecord.costSoFar + totalEdgeCost;
 
                 if (records.TryGetValue(neighborIdx, out NodeRecord neighborRecord))
@@ -204,21 +212,18 @@ public struct VehiclePathfindingJob : IJob
     private void BuildTrimmedResult(NativeList<int> pathEdges)
     {
         NativeList<float3> rawPoints = new NativeList<float3>(Allocator.Temp);
+
+        for (int i = 0; i < pathEdges.Length; i++)
+        {
+            ResultEdgeIndices.Add(pathEdges[i]);
+        }
         
-        bool justMerged = false;
-        bool isFirstValidEdge = true; // Protects the StartPos trim if edge 0 is a merge
+        bool isFirstValidEdge = true;
 
         for (int i = 0; i < pathEdges.Length; i++)
         {
             NativeTrafficEdge edge = Edges[pathEdges[i]];
             
-            // Skip the sharp 90-degree lateral points completely
-            if (edge.isMergeEdge)
-            {
-                justMerged = true;
-                continue; 
-            }
-
             int startIndex = 0;
             int endIndex = edge.waypointCount - 1;
 
@@ -246,65 +251,6 @@ public struct VehiclePathfindingJob : IJob
             // Failsafe for short 1-edge paths
             if (i == 0 && pathEdges.Length == 1 && startIndex > endIndex) return;
 
-            // --- SMOOTH S-CURVE BEZIER INJECTION ---
-            if (justMerged)
-            {
-                float mergeDistance = 0.5f; // Extended slightly to make the S-curve look natural
-                float distAccum = 0f;
-                int mergeSkipIndex = startIndex;
-                
-                for (int j = startIndex; j < endIndex; j++)
-                {
-                    distAccum += math.distance(Waypoints[edge.waypointStartIndex + j], Waypoints[edge.waypointStartIndex + j + 1]);
-                    mergeSkipIndex = j + 1;
-                    if (distAccum >= mergeDistance) break;
-                }
-                
-                mergeSkipIndex = math.min(mergeSkipIndex, endIndex);
-
-                // If we have enough history to know the car's forward direction, draw a Bezier curve
-                if (rawPoints.Length >= 2) 
-                {
-                    float3 p0 = rawPoints[rawPoints.Length - 1];
-                    float3 p_prev = rawPoints[rawPoints.Length - 2];
-                    float3 dir0 = math.normalize(p0 - p_prev); // Tangent leaving current lane
-
-                    float3 p3 = Waypoints[edge.waypointStartIndex + mergeSkipIndex];
-                    float3 dir3 = float3.zero; // Tangent entering new lane
-                    
-                    if (mergeSkipIndex < endIndex) {
-                        dir3 = math.normalize(Waypoints[edge.waypointStartIndex + mergeSkipIndex + 1] - p3);
-                    } else if (mergeSkipIndex > startIndex) {
-                        dir3 = math.normalize(p3 - Waypoints[edge.waypointStartIndex + mergeSkipIndex - 1]);
-                    } else {
-                        dir3 = dir0; // Fallback parallel
-                    }
-
-                    // Control points scaled to push the curve forward smoothly
-                    float controlScale = mergeDistance * 0.45f;
-                    float3 p1 = p0 + (dir0 * controlScale);
-                    float3 p2 = p3 - (dir3 * controlScale);
-
-                    // Generate smooth interpolated waypoints
-                    int resolution = 12;
-                    for (int step = 1; step < resolution; step++)
-                    {
-                        float t = step / (float)resolution;
-                        float u = 1 - t;
-                        float tt = t * t;
-                        float3 p = (u * u * u) * p0;
-                        p += 3 * (u * u) * t * p1;
-                        p += 3 * u * tt * p2;
-                        p += (tt * t) * p3;
-                        rawPoints.Add(p);
-                    }
-                }
-                
-                // Jump the loop index forward so we resume tracking perfectly after the S-Curve
-                startIndex = mergeSkipIndex;
-                justMerged = false;
-            }
-
             // Append the actual physical waypoints of the new lane
             for (int j = startIndex; j <= endIndex; j++)
             {
@@ -325,6 +271,92 @@ public struct VehiclePathfindingJob : IJob
 
         ResultWaypoints.Add(TargetPos);
         rawPoints.Dispose();
+    }
+
+    private bool CanTravelDirectlyOnEdge(NativeTrafficEdge edge)
+    {
+        float startDistance = GetClosestDistanceAlongEdge(edge, StartPos);
+        float targetDistance = GetClosestDistanceAlongEdge(edge, TargetPos);
+        return targetDistance + 0.05f >= startDistance;
+    }
+
+    private bool IsLegal(NativeTrafficEdge edge)
+    {
+        return (edge.requiredPermissions == 0 ||
+                (edge.requiredPermissions & VehiclePermissions) != 0) &&
+               (edge.requiredCapabilities == 0 ||
+                (edge.requiredCapabilities & VehicleCapabilities) != 0);
+    }
+
+    private float GetCostFromPointToEdgeEnd(NativeTrafficEdge edge, float3 point)
+    {
+        float alongEdgeDistance = GetClosestDistanceAlongEdge(edge, point);
+        float edgeLength = GetEdgeLength(edge);
+        float distanceToLane = GetClosestDistanceToEdge(edge, point);
+        return distanceToLane + math.max(0f, edgeLength - alongEdgeDistance);
+    }
+
+    private float GetClosestDistanceToEdge(NativeTrafficEdge edge, float3 point)
+    {
+        if (edge.waypointCount <= 1) return math.distance(point, Nodes[edge.endNodeIndex].position);
+
+        float bestDistanceSq = float.MaxValue;
+        for (int i = 1; i < edge.waypointCount; i++)
+        {
+            float3 segmentStart = Waypoints[edge.waypointStartIndex + i - 1];
+            float3 segmentEnd = Waypoints[edge.waypointStartIndex + i];
+            float3 segment = segmentEnd - segmentStart;
+            float segmentLengthSq = math.lengthsq(segment);
+            if (segmentLengthSq <= 0.0001f) continue;
+
+            float t = math.clamp(math.dot(point - segmentStart, segment) / segmentLengthSq, 0f, 1f);
+            float3 projected = segmentStart + segment * t;
+            bestDistanceSq = math.min(bestDistanceSq, math.lengthsq(point - projected));
+        }
+
+        return math.sqrt(bestDistanceSq);
+    }
+
+    private float GetEdgeLength(NativeTrafficEdge edge)
+    {
+        float length = 0f;
+        for (int i = 1; i < edge.waypointCount; i++)
+        {
+            length += math.distance(Waypoints[edge.waypointStartIndex + i - 1], Waypoints[edge.waypointStartIndex + i]);
+        }
+
+        return length;
+    }
+
+    private float GetClosestDistanceAlongEdge(NativeTrafficEdge edge, float3 point)
+    {
+        if (edge.waypointCount <= 1) return 0f;
+
+        float bestDistance = 0f;
+        float bestDistanceSq = float.MaxValue;
+        float cumulativeDistance = 0f;
+
+        for (int i = 1; i < edge.waypointCount; i++)
+        {
+            float3 segmentStart = Waypoints[edge.waypointStartIndex + i - 1];
+            float3 segmentEnd = Waypoints[edge.waypointStartIndex + i];
+            float3 segment = segmentEnd - segmentStart;
+            float segmentLengthSq = math.lengthsq(segment);
+            if (segmentLengthSq <= 0.0001f) continue;
+
+            float t = math.clamp(math.dot(point - segmentStart, segment) / segmentLengthSq, 0f, 1f);
+            float3 projected = segmentStart + segment * t;
+            float distanceSq = math.lengthsq(point - projected);
+            if (distanceSq < bestDistanceSq)
+            {
+                bestDistanceSq = distanceSq;
+                bestDistance = cumulativeDistance + math.sqrt(segmentLengthSq) * t;
+            }
+
+            cumulativeDistance += math.sqrt(segmentLengthSq);
+        }
+
+        return bestDistance;
     }
 
     private void DisposeTemp(NativeHashMap<int, NodeRecord> records, NativeList<int> openList)

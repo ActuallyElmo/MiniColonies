@@ -602,7 +602,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 271538993}
-  - component: {fileID: 271538992}
+  - component: {fileID: 271538994}
   m_Layer: 0
   m_Name: MouseGridProjection
   m_TagString: Untagged
@@ -610,23 +610,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &271538992
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 271538990}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: e189afb576810ac4f8d19372680d8d91, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  gridProjector: {fileID: 944388626}
-  terrainLayer:
-    serializedVersion: 2
-    m_Bits: 64
-  projectorHeightOffset: 10
 --- !u!4 &271538993
 Transform:
   m_ObjectHideFlags: 0
@@ -643,6 +626,23 @@ Transform:
   - {fileID: 944388628}
   m_Father: {fileID: 2080673751}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &271538994
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 271538990}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: eeb7ac735bc1e1a4a9384e925408fc62, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  gridProjector: {fileID: 944388626}
+  terrainLayer:
+    serializedVersion: 2
+    m_Bits: 64
+  projectorHeightOffset: 10
 --- !u!1 &351677697
 GameObject:
   m_ObjectHideFlags: 0
@@ -959,6 +959,7 @@ GameObject:
   - component: {fileID: 567178516}
   - component: {fileID: 567178517}
   - component: {fileID: 567178518}
+  - component: {fileID: 567178519}
   m_Layer: 0
   m_Name: GeneralManager
   m_TagString: Untagged
@@ -1046,6 +1047,18 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   disableAllPathfinding: 0
+--- !u!114 &567178519
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567178513}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8c7f3a33e07f4f34c8db2de6f2d7437e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
 --- !u!1 &670385186
 GameObject:
   m_ObjectHideFlags: 0
@@ -2872,7 +2885,7 @@ MonoBehaviour:
   maxSpeed: 30
   movementSmoothness: 8
   zoomSensitivity: 12.5
-  minZoom: 8
+  minZoom: 6
   maxZoom: 20
   zoomSmoothTime: 0.1
   minZoomPadding: {x: 5, y: 5}

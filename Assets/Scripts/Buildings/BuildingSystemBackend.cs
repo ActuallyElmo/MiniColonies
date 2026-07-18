@@ -9,6 +9,7 @@ public class BuildingSystemBackend : MonoBehaviour
     // Pure Data Collections
     private Dictionary<Vector2Int, Building> _gridOccupancy = new Dictionary<Vector2Int, Building>();
     private List<Building> _activeBuildings = new List<Building>();
+    public int AuthoringRevision { get; private set; }
 
     // Events for other systems (like RoadNetworkManager) to react to
     public event Action<Building> OnBuildingPlaced;
@@ -37,7 +38,7 @@ public class BuildingSystemBackend : MonoBehaviour
         return false;
     }
 
-    public List<Building> GetActiveBuildings() 
+    public IReadOnlyList<Building> GetActiveBuildings()
     {
         return _activeBuildings;
     }
@@ -46,6 +47,11 @@ public class BuildingSystemBackend : MonoBehaviour
 
     public void RegisterBuilding(Building building, List<BuildingTile> activeFootprint)
     {
+        if (building == null || activeFootprint == null || _activeBuildings.Contains(building))
+        {
+            return;
+        }
+
         foreach (var tile in activeFootprint)
         {
             Vector2Int globalPos = building.originCell + tile.localPosition;
@@ -53,7 +59,15 @@ public class BuildingSystemBackend : MonoBehaviour
         }
         
         _activeBuildings.Add(building);
+        IncrementAuthoringRevision();
         OnBuildingPlaced?.Invoke(building);
+    }
+
+    public bool NotifyBuildingAuthoringChanged(Building building)
+    {
+        if (building == null || !_activeBuildings.Contains(building)) return false;
+        IncrementAuthoringRevision();
+        return true;
     }
 
     public bool TryDemolishBuilding(Vector2Int cell)
@@ -75,6 +89,7 @@ public class BuildingSystemBackend : MonoBehaviour
 
             // 2. Remove from active list
             _activeBuildings.Remove(buildingToRemove);
+            IncrementAuthoringRevision();
             
             // 3. Notify systems
             OnBuildingRemoved?.Invoke(buildingToRemove);
@@ -84,5 +99,14 @@ public class BuildingSystemBackend : MonoBehaviour
             return true;
         }
         return false;
+    }
+
+    private void IncrementAuthoringRevision()
+    {
+        unchecked
+        {
+            AuthoringRevision++;
+            if (AuthoringRevision <= 0) AuthoringRevision = 1;
+        }
     }
 }

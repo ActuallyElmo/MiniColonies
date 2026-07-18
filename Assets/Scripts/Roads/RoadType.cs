@@ -3,6 +3,13 @@ using UnityEngine;
 [CreateAssetMenu(fileName = "New Road Type", menuName = "ColonySim/Road Type")]
 public class RoadType : ScriptableObject
 {
+    [Header("Traffic Profile")]
+    [Tooltip("Persistent authoring key used to derive the compiled road profile ID. Falls back to roadName for existing assets.")]
+    public string trafficProfileKey;
+    public RoadPermissionMask allowedTrafficPermissions = RoadPermissionMask.All;
+    public VehicleCapabilityMask allowedVehicleCapabilities = VehicleCapabilityMask.All;
+    public RoadMovementPolicyMask supportedTrafficMovements = RoadMovementPolicyMask.All;
+
     [Header("Gameplay Settings (Prep for Vehicles)")]
     public string roadName = "Standard Road";
     public int lanesPerWay = 1;
@@ -16,4 +23,11 @@ public class RoadType : ScriptableObject
     [Header("Visuals")]
     public Material roadMaterial;
     public Material curbMaterial;
+
+    public bool TryCompileTrafficProfile(
+        TrafficDiagnosticCollection diagnostics,
+        out RoadProfile profile)
+    {
+        return RoadProfile.TryCompile(this, diagnostics, out profile);
+    }
 }

@@ -12,6 +12,14 @@ public struct NativeTrafficNode
 
 public struct NativeTrafficEdge
 {
+    public int edgeId;
+    public int kind;
+    public int graphVersion;
+    public ulong stableLaneSegmentId;
+    public ulong stableMovementId;
+    public int requiredPermissions;
+    public int requiredCapabilities;
+
     public int startNodeIndex;
     public int endNodeIndex;
     public float cost;
@@ -22,6 +30,20 @@ public struct NativeTrafficEdge
 
     public bool isMergeEdge;
     public float laneChangePenalty; 
+
+    public int laneIndex;
+    public int totalLanes;
+    public int fromDirectionBit;
+    public int toDirectionBit;
+    public int fromLaneIndex;
+    public int toLaneIndex;
+    public int turnType;
+    public int conflictMask;
+    public bool hasControlledNodeCell;
+    public int2 controlledNodeCell;
+    public bool isRoadTypeTransition;
+    public int2 transitionCell;
+    public int transitionPriority;
     
     public int waypointStartIndex;
     public int waypointCount;
@@ -42,6 +64,8 @@ public class NativeTrafficGraph : MonoBehaviour
     public Dictionary<TrafficEdge, int> EdgeToIndex = new Dictionary<TrafficEdge, int>();
 
     public bool IsReady { get; private set; } = false;
+    public TrafficGraphVersion GraphVersion { get; private set; } =
+        TrafficGraphVersion.Invalid;
 
     private void Awake()
     {
@@ -57,6 +81,7 @@ public class NativeTrafficGraph : MonoBehaviour
     public void DisposeGraph()
     {
         IsReady = false;
+        GraphVersion = TrafficGraphVersion.Invalid;
         
         if (Nodes.IsCreated) Nodes.Dispose();
         if (Edges.IsCreated) Edges.Dispose();
@@ -89,11 +114,21 @@ public class NativeTrafficGraph : MonoBehaviour
         for (int i = 0; i < allEdges.Count; i++) EdgeToIndex[allEdges[i]] = i;
 
         int currentWaypointOffset = 0;
+        TrafficGraphVersion graphVersion = TrafficGraphVersion.Invalid;
 
         // 1. Build Edges and Waypoints
         for (int i = 0; i < allEdges.Count; i++)
         {
             TrafficEdge edge = allEdges[i];
+            if (edge.graphVersion.IsValid)
+            {
+                if (!graphVersion.IsValid) graphVersion = edge.graphVersion;
+                else if (graphVersion != edge.graphVersion)
+                {
+                    DisposeGraph();
+                    return;
+                }
+            }
             
             for (int w = 0; w < edge.waypoints.Count; w++)
             {
@@ -102,6 +137,13 @@ public class NativeTrafficGraph : MonoBehaviour
 
             Edges[i] = new NativeTrafficEdge
             {
+                edgeId = edge.edgeId,
+                kind = (int)edge.kind,
+                graphVersion = edge.graphVersion.Value,
+                stableLaneSegmentId = edge.stableLaneSegmentId.Value,
+                stableMovementId = edge.stableMovementId.Value,
+                requiredPermissions = (int)edge.requiredPermissions,
+                requiredCapabilities = (int)edge.requiredCapabilities,
                 startNodeIndex = NodeToIndex[edge.startNode],
                 endNodeIndex = NodeToIndex[edge.endNode],
                 cost = edge.isIntersection ? Vector3.Distance(edge.startNode.position, edge.endNode.position) * 1f 
@@ -112,6 +154,20 @@ public class NativeTrafficGraph : MonoBehaviour
 
                 isUTurn = edge.isUTurn,
                 uTurnPenalty = edge.isUTurn ? 0.3f : 0.0f,
+
+                laneIndex = edge.laneIndex,
+                totalLanes = edge.totalLanes,
+                fromDirectionBit = edge.fromDirectionBit,
+                toDirectionBit = edge.toDirectionBit,
+                fromLaneIndex = edge.fromLaneIndex,
+                toLaneIndex = edge.toLaneIndex,
+                turnType = (int)edge.turnType,
+                conflictMask = edge.conflictMask,
+                hasControlledNodeCell = edge.hasControlledNodeCell,
+                controlledNodeCell = new int2(edge.controlledNodeCell.x, edge.controlledNodeCell.y),
+                isRoadTypeTransition = edge.isRoadTypeTransition,
+                transitionCell = new int2(edge.transitionCell.x, edge.transitionCell.y),
+                transitionPriority = edge.transitionPriority,
 
                 waypointStartIndex = currentWaypointOffset,
                 waypointCount = edge.waypoints.Count
@@ -150,6 +206,7 @@ public class NativeTrafficGraph : MonoBehaviour
         // (Store it as a persistent array in the class)
         NodeOutConnections = new NativeArray<int>(flatOutgoingEdges.ToArray(), Allocator.Persistent);
 
+        GraphVersion = graphVersion;
         IsReady = true;
     }
 }

@@ -56,6 +56,16 @@ public class SimulationTaskManager : MonoBehaviour
         _activeJobHandles.Add(handle);
     }
 
+    public void CompleteActiveJobs()
+    {
+        foreach (JobHandle handle in _activeJobHandles)
+        {
+            handle.Complete();
+        }
+
+        _activeJobHandles.Clear();
+    }
+
     private void LateUpdate()
     {
         for (int i = _activeJobHandles.Count - 1; i >= 0; i--)
@@ -66,7 +76,6 @@ public class SimulationTaskManager : MonoBehaviour
 
     private void OnDestroy()
     {
-        foreach (var handle in _activeJobHandles) handle.Complete();
-        _activeJobHandles.Clear();
+        CompleteActiveJobs();
     }
 }

@@ -35,6 +35,7 @@ public class TrafficHoverDebugger : MonoBehaviour
             {
                 _currentHoveredEdge = closestEdge;
                 DrawSmartTrace(closestEdge);
+                LogHoverMetadata(closestEdge);
             }
         }
         else if (_currentHoveredEdge != null)
@@ -57,15 +58,15 @@ public class TrafficHoverDebugger : MonoBehaviour
     private void TracePath(TrafficEdge startEdge, int depth, Color pathColor)
     {
         TrafficEdge currentEdge = startEdge;
-        int safetyBreaker = 0; // Prevent infinite loops in circular road networks
+        int safetyBreaker = 0; // Prevent infinite loops in circular road networkss
 
         while (currentEdge != null && safetyBreaker < 100)
         {
             safetyBreaker++;
             
             // Draw the straight lane. If depth > 0, make it slightly thinner so the main trunk stands out.
-            float lineWidth = depth == 0 ? 0.25f : 0.15f;
-            DrawLine(currentEdge.waypoints, pathColor, lineWidth);
+            float lineWidth = depth == 0 ? 0.10f : 0.05f;
+            DrawLine(currentEdge.waypoints, GetDebugColor(currentEdge, pathColor), lineWidth);
 
             TrafficEdge nextStraightEdge = null;
             bool reachedIntersection = false;
@@ -78,7 +79,7 @@ public class TrafficHoverDebugger : MonoBehaviour
                     reachedIntersection = true;
                     
                     // Draw the turn curve thicker and in its logical color
-                    DrawLine(outEdge.waypoints, outEdge.edgeColor, 0.35f);
+                    DrawLine(outEdge.waypoints, GetDebugColor(outEdge, outEdge.edgeColor), 0.35f);
                     
                     if (depth < 1)
                     {
@@ -123,6 +124,35 @@ public class TrafficHoverDebugger : MonoBehaviour
 
     // --- RENDERING HELPERS ---
 
+    private Color GetDebugColor(TrafficEdge edge, Color fallback)
+    {
+        if (edge == null) return fallback;
+
+        switch (edge.kind)
+        {
+            case TrafficEdgeKind.RoadTypeTransition: return new Color(0.55f, 0.9f, 1f);
+            case TrafficEdgeKind.LaneChange: return new Color(0.8f, 0.8f, 0.8f);
+            case TrafficEdgeKind.RoadEndUTurn: return Color.gray;
+            case TrafficEdgeKind.IntersectionMovement: return edge.edgeColor;
+            default: return fallback;
+        }
+    }
+
+    private void LogHoverMetadata(TrafficEdge edge)
+    {
+        if (edge == null) return;
+
+        string transitionInfo = edge.kind == TrafficEdgeKind.RoadTypeTransition
+            ? $" transitionCell={edge.transitionCell} priority={edge.transitionPriority}"
+            : string.Empty;
+        string controllerInfo = edge.exitController != null ? $" controller={edge.exitController.RuleType}" : string.Empty;
+        string graphInfo = edge.graphVersion.IsValid
+            ? $" graph={edge.graphVersion.Value} lane={edge.stableLaneId.Value:X16} segment={edge.stableLaneSegmentId.Value:X16} movement={edge.stableMovementId.Value:X16}"
+            : string.Empty;
+
+        Debug.Log($"Traffic edge {edge.edgeId} kind={edge.kind} lane={edge.fromLaneIndex}->{edge.toLaneIndex} dirs={edge.fromDirectionBit}->{edge.toDirectionBit} occupants={edge.occupants.Count}{transitionInfo}{controllerInfo}{graphInfo}");
+    }
+
     private void DrawLine(List<Vector3> points, Color color, float width)
     {
         GameObject lineObj = new GameObject("HoverDebugLine");
@@ -159,7 +189,7 @@ public class TrafficHoverDebugger : MonoBehaviour
         GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
         sphere.transform.SetParent(this.transform);
         sphere.transform.position = position + (Vector3.up * 0.2f);
-        sphere.transform.localScale = Vector3.one * 0.4f;
+        sphere.transform.localScale = Vector3.one * 0.1f;
 
         Destroy(sphere.GetComponent<Collider>()); // We don't want physics on this
 

@@ -17,5 +17,12 @@ MonoBehaviour:
   maximumVehicleSpeed: 1
   isLongVehicle: 0
   isOffroadVehicle: 0
+  vehicleLengthUnits: 0.24
+  minimumFollowingGapUnits: 0.1
+  accelerationUnitsPerSecondSquared: 0.7
+  decelerationUnitsPerSecondSquared: 0.5
+  emergencyDecelerationUnitsPerSecondSquared: 1
+  desiredTimeHeadwaySeconds: 0.12
+  maximumJerkUnitsPerSecondCubed: 30
   vehicleSpaceUsed: 0
   amountOfPopsTransported: 0

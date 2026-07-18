@@ -58,10 +58,16 @@ public class RoadMeshGenerationTask : ISimulationTask
         public float p1_w, p1_c;
     }
 
-    public RoadMeshGenerationTask(HashSet<Vector2Int> chunks, Dictionary<Vector2Int, RoadCell> roads)
+    public RoadMeshGenerationTask(
+        HashSet<Vector2Int> chunks,
+        IReadOnlyDictionary<Vector2Int, RoadCell> roads)
     {
         _dirtyChunks = chunks;
-        _roadData = new Dictionary<Vector2Int, RoadCell>(roads);
+        _roadData = new Dictionary<Vector2Int, RoadCell>(roads.Count);
+        foreach (KeyValuePair<Vector2Int, RoadCell> pair in roads)
+        {
+            _roadData.Add(pair.Key, pair.Value);
+        }
         _wm = WorldManager.Instance;
         _vis = RoadVisualSystem.Instance;
         _roadsToProcess = new List<RoadCell>(_roadData.Values);

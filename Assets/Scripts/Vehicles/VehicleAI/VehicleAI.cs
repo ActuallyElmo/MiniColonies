@@ -1,6 +1,5 @@
 using UnityEngine;
 using System.Collections;
-using System.Collections.Generic;
 
 public class VehicleAI : MonoBehaviour
 {
@@ -12,20 +11,48 @@ public class VehicleAI : MonoBehaviour
     public Building targetBuilding;
     public VehicleData vehicleData;
 
-    [Header("Navigation")]
-    private Queue<Vector3> _activePath;
-    private Vector3 _currentWaypoint;
-    private bool _isMoving = false;
+    [Header("Conveyor Navigation")]
+    public TrafficEdge currentEdge;
+    public float conveyorDistanceOnEdge;
+    public TrafficRoute conveyorRoute;
+    public int conveyorRouteEdgeIndex;
+    public float conveyorCurrentSpeed;
+    public bool isConveyorMoving;
+    [HideInInspector] public bool trafficWasBlocked;
+    [HideInInspector] public float trafficReleaseTime;
+    [HideInInspector] public float trafficStationaryTime;
+    [HideInInspector] public VehicleSimulationId simulationId;
+    [HideInInspector] public float conveyorPreviousAccelerationUnitsPerSecondSquared;
+    [HideInInspector] public TacticalLaneDecision lastTacticalLaneDecision;
 
-    // Movement smoothing
-    private float _currentSpeed = 0f;
-    private float _acceleration = 12f;
-    private float _deceleration = 15f;
+    private const float DefaultAcceleration = 12f;
+    private const float DefaultDeceleration = 15f;
+    private const float DefaultEmergencyDeceleration = 30f;
+    private const float DefaultMaximumJerk = 30f;
+    private const float VehicleRoadClearance = 0.03f;
+    private static ulong _nextSimulationSequence = 1UL;
 
-    private Vector3[] _cachedOutboundPath;
-    private Vector3[] _cachedInboundPath;
-    private Building _cachedTargetBuilding;
+    private Building _pendingTargetBuilding;
+    private RoadNetwork _pendingNetwork;
+    private bool _hasPendingAssignment;
     private RoadNetwork _activeNetwork;
+    private Coroutine _enterRouteRetryCoroutine;
+
+    public VehicleSimulationId SimulationId => simulationId;
+
+    public VehicleSimulationId EnsureSimulationId()
+    {
+        if (!simulationId.IsValid)
+        {
+            string vehicleKey = vehicleData != null
+                ? vehicleData.vehicleName
+                : name;
+            simulationId = VehicleSimulationId.FromStableKey(
+                $"{vehicleKey}:{_nextSimulationSequence++}");
+        }
+
+        return simulationId;
+    }
 
     public void Initialize(Building home, VehicleData data)
     {
@@ -36,63 +63,32 @@ public class VehicleAI : MonoBehaviour
 
     private void Update()
     {
-        if (_isMoving) MoveAlongPath();
     }
 
     // --- NEW: LATE-BINDING PATHING ORIGIN ---
     public Vector3 GetPathingOrigin()
     {
-        // If we are actively driving, our next logical starting point for a seamless new path 
-        // is the waypoint we are currently heading towards.
-        if (_isMoving && _activePath != null)
+        if (isConveyorMoving && currentEdge != null)
         {
-            return _currentWaypoint;
+            return currentEdge.GetPositionAtDistance(conveyorDistanceOnEdge);
         }
+
         return transform.position;
     }
 
     public void DispatchTo(Building target, RoadNetwork network)
     {
-        if (_cachedTargetBuilding != target || _activeNetwork != network)
-        {
-            _cachedTargetBuilding = target;
-            _activeNetwork = network;
-            ClearPathCaches();
-        }
-
-        // Debug.Log("dispatch");
-
         targetBuilding = target;
+        _activeNetwork = network;
         currentState = VehicleState.Outbound;
         
         Vector2Int exitPort = homeBuilding.GetClosestPort(PortType.Exit, _activeNetwork, targetBuilding.originCell);
         TeleportToPort(exitPort);
         gameObject.SetActive(true);
 
-        if (_cachedOutboundPath == null || _cachedOutboundPath.Length == 0)
-        {
-            Vector2Int entryPort = targetBuilding.GetClosestPort(PortType.Entry, _activeNetwork, exitPort);
-            Vector3 targetWorldPos = GetWorldPositionOfPort(entryPort);
-            
-            VehiclePathRequestManager.Instance.RequestPath(this, targetWorldPos, (newPath) => 
-            {
-                if (newPath != null && newPath.Count > 0)
-                {
-                    _cachedOutboundPath = newPath.ToArray();
-                    _activePath = new Queue<Vector3>(_cachedOutboundPath);
-                    StartDriving();
-                }
-                else
-                {
-                    RecallAndDeactivate();
-                }
-            });
-        }
-        else
-        {
-            _activePath = new Queue<Vector3>(_cachedOutboundPath);
-            StartDriving();
-        }
+        Vector2Int entryPort = targetBuilding.GetClosestPort(PortType.Entry, _activeNetwork, exitPort);
+        Vector3 targetWorldPos = GetWorldPositionOfPort(entryPort);
+        RequestConveyorRoute(targetWorldPos, false, true, exitPort, entryPort);
     }
 
     public void ReturnHome()
@@ -104,36 +100,20 @@ public class VehicleAI : MonoBehaviour
         Vector2Int exitPort = targetBuilding.GetClosestPort(PortType.Exit, _activeNetwork, homeBuilding.originCell);
         TeleportToPort(exitPort);
 
-        if (_cachedInboundPath == null || _cachedInboundPath.Length == 0)
-        {
-            Vector2Int entryPort = homeBuilding.GetClosestPort(PortType.Entry, _activeNetwork, exitPort);
-            Vector3 targetWorldPos = GetWorldPositionOfPort(entryPort);
-            
-            VehiclePathRequestManager.Instance.RequestPath(this, targetWorldPos, (newPath) => 
-            {
-                if (newPath != null && newPath.Count > 0)
-                {
-                    _cachedInboundPath = newPath.ToArray();
-                    _activePath = new Queue<Vector3>(_cachedInboundPath);
-                    StartDriving();
-                }
-                else
-                {
-                    // Debug.Log("nopath");
-                    RecallAndDeactivate();
-                }
-            });
-        }
-        else
-        {
-            _activePath = new Queue<Vector3>(_cachedInboundPath);
-            StartDriving();
-        }
+        Vector2Int entryPort = homeBuilding.GetClosestPort(PortType.Entry, _activeNetwork, exitPort);
+        Vector3 targetWorldPos = GetWorldPositionOfPort(entryPort);
+        RequestConveyorRoute(targetWorldPos, false, true, exitPort, entryPort);
     }
 
     public void Reroute(Building newTarget, RoadNetwork network)
     {
-        ClearPathCaches(); 
+        if (isConveyorMoving)
+        {
+            _pendingTargetBuilding = newTarget;
+            _pendingNetwork = network;
+            _hasPendingAssignment = true;
+            return;
+        }
 
         if (currentState == VehicleState.Idle || !gameObject.activeSelf)
         {
@@ -166,92 +146,272 @@ public class VehicleAI : MonoBehaviour
 
         Vector3 targetWorldPos = GetWorldPositionOfPort(destinationPort);
         
-        VehiclePathRequestManager.Instance.RequestPath(this, targetWorldPos, (newPath) => 
-        {
-            if (newPath != null && newPath.Count > 0)
-            {
-                _activePath = newPath;
-                _currentWaypoint = _activePath.Dequeue(); 
-                _isMoving = true;
-            }
-            else
-            {
-                Debug.LogWarning($"{vehicleData.vehicleName} path obliterated. Emergency reset to home.");
-                RecallAndDeactivate();
-                if (targetBuilding != null) DispatchTo(targetBuilding, _activeNetwork);
-            }
-        });
+        RequestConveyorRoute(targetWorldPos, true, false, destinationPort);
     }
 
     public void RecallAndDeactivate()
     {
+        if (ConveyorTrafficManager.Instance != null)
+        {
+            ConveyorTrafficManager.Instance.LeaveTraffic(this);
+        }
+
+        if (_enterRouteRetryCoroutine != null)
+        {
+            StopCoroutine(_enterRouteRetryCoroutine);
+            _enterRouteRetryCoroutine = null;
+        }
+
         currentState = VehicleState.Idle;
         targetBuilding = null;
-        _cachedTargetBuilding = null;
-        _isMoving = false;
-        ClearPathCaches();
+        _pendingTargetBuilding = null;
+        _pendingNetwork = null;
+        _hasPendingAssignment = false;
 
-        _currentSpeed = 0f;
         StopAllCoroutines();
         gameObject.SetActive(false); 
     }
 
+    public void RequestConveyorRerouteAfterGraphRebuild()
+    {
+        if (currentState == VehicleState.Idle || !gameObject.activeInHierarchy)
+        {
+            return;
+        }
+
+        ForceConveyorReroute();
+    }
+
     // --- MOVEMENT LOGIC ---
 
-    private void StartDriving()
+    private void StartConveyorRoute(TrafficRoute route)
     {
-        if (_activePath != null && _activePath.Count > 0)
+        if (route == null || route.ManagedEdges == null || route.ManagedEdges.Count == 0 || route.ManagedEdges[0] == null)
         {
-            _currentWaypoint = _activePath.Dequeue();
-            _isMoving = true;
-        }
-        else
-        {
-            Debug.LogWarning($"{vehicleData.vehicleName} pathfinding failed. Cannot reach target.");
+            Debug.LogWarning($"{vehicleData.vehicleName} received an invalid conveyor route.");
             RecallAndDeactivate();
+            return;
+        }
+
+        if (_enterRouteRetryCoroutine != null)
+        {
+            StopCoroutine(_enterRouteRetryCoroutine);
+            _enterRouteRetryCoroutine = null;
+        }
+
+        if (TryEnterConveyorRoute(route)) return;
+
+        Debug.LogWarning(
+            $"{GetVehicleDebugName()} is waiting to enter conveyor route. {DescribeTrafficRouteFailure(route)}");
+
+        _enterRouteRetryCoroutine = StartCoroutine(RetryEnterConveyorRoute(route));
+    }
+
+    private bool TryEnterConveyorRoute(TrafficRoute route)
+    {
+        if (ConveyorTrafficManager.Instance == null)
+        {
+            Debug.LogWarning($"{vehicleData.vehicleName} could not find conveyor traffic manager.");
+            RecallAndDeactivate();
+            return true;
+        }
+
+        return ConveyorTrafficManager.Instance.EnterRoute(this, route);
+    }
+
+    private IEnumerator RetryEnterConveyorRoute(TrafficRoute route)
+    {
+        while (currentState != VehicleState.Idle && gameObject.activeInHierarchy)
+        {
+            yield return new WaitForSeconds(0.25f);
+            if (TryEnterConveyorRoute(route))
+            {
+                _enterRouteRetryCoroutine = null;
+                yield break;
+            }
+        }
+
+        _enterRouteRetryCoroutine = null;
+    }
+
+    private void RequestConveyorRoute(Vector3 targetWorldPos, bool recoverOnFailure = false, bool snapStartToClosestEdgeEndpoint = false)
+    {
+        RequestConveyorRoute(targetWorldPos, recoverOnFailure, snapStartToClosestEdgeEndpoint, Vector2Int.zero, false, Vector2Int.zero, false);
+    }
+
+    private void RequestConveyorRoute(
+        Vector3 targetWorldPos,
+        bool recoverOnFailure,
+        bool snapStartToClosestEdgeEndpoint,
+        Vector2Int targetPortCell,
+        RouteRerouteReason rerouteReason = RouteRerouteReason.InitialRequest)
+    {
+        RequestConveyorRoute(
+            targetWorldPos,
+            recoverOnFailure,
+            snapStartToClosestEdgeEndpoint,
+            Vector2Int.zero,
+            false,
+            targetPortCell,
+            true,
+            rerouteReason);
+    }
+
+    private void RequestConveyorRoute(Vector3 targetWorldPos, bool recoverOnFailure, bool snapStartToClosestEdgeEndpoint, Vector2Int startPortCell, Vector2Int targetPortCell)
+    {
+        RequestConveyorRoute(targetWorldPos, recoverOnFailure, snapStartToClosestEdgeEndpoint, startPortCell, true, targetPortCell, true);
+    }
+
+    private void RequestConveyorRoute(
+        Vector3 targetWorldPos,
+        bool recoverOnFailure,
+        bool snapStartToClosestEdgeEndpoint,
+        Vector2Int startPortCell,
+        bool hasStartPortCell,
+        Vector2Int targetPortCell,
+        bool hasTargetPortCell,
+        RouteRerouteReason rerouteReason = RouteRerouteReason.InitialRequest)
+    {
+        StrategicCongestionSnapshot congestionSnapshot =
+            ConveyorTrafficManager.Instance != null
+                ? ConveyorTrafficManager.Instance.BuildStrategicCongestionSnapshot()
+                : null;
+
+        if (VehiclePathRequestManager.Instance == null)
+        {
+            Debug.LogError(
+                $"{GetVehicleDebugName()} could not request a conveyor route because VehiclePathRequestManager.Instance is missing. " +
+                $"home={DescribeBuilding(homeBuilding)}, target={DescribeBuilding(targetBuilding)}, activeNetwork={DescribeNetwork(_activeNetwork)}");
+            RecallAndDeactivate();
+            return;
+        }
+
+        Building retryTarget = targetBuilding;
+        RoadNetwork retryNetwork = _activeNetwork;
+        VehiclePathRequestManager.Instance.RequestPath(this, targetWorldPos, null, (route) =>
+        {
+            if (route != null && route.ManagedEdges != null && route.ManagedEdges.Count > 0)
+            {
+                StartConveyorRoute(route);
+            }
+            else
+            {
+                Debug.LogWarning(
+                    $"{GetVehicleDebugName()} conveyor route failed. {DescribeTrafficRouteFailure(route)}");
+                if (recoverOnFailure)
+                {
+                    RecallAndDeactivate();
+                    if (retryTarget != null && retryNetwork != null)
+                    {
+                        DispatchTo(retryTarget, retryNetwork);
+                    }
+                }
+                else
+                {
+                    RecallAndDeactivate();
+                }
+            }
+        }, snapStartToClosestEdgeEndpoint, startPortCell, hasStartPortCell, targetPortCell, hasTargetPortCell, rerouteReason, congestionSnapshot);
+    }
+
+    public void RecoverFromTrafficStall()
+    {
+        Building retryTarget = targetBuilding;
+        RoadNetwork retryNetwork = _activeNetwork;
+
+        RecallAndDeactivate();
+        if (retryTarget != null && retryNetwork != null)
+        {
+            DispatchTo(retryTarget, retryNetwork);
         }
     }
 
-    private void MoveAlongPath()
+    private void ForceConveyorReroute()
     {
-        float targetSpeed = vehicleData.maximumVehicleSpeed;
+        Building targetForRoute = targetBuilding;
+        RoadNetwork networkForRoute = _activeNetwork;
 
-        if (_activePath.Count == 0)
+        if (currentState == VehicleState.Idle || networkForRoute == null)
         {
-            float distToFinal = Vector3.Distance(transform.position, _currentWaypoint);
-            targetSpeed = Mathf.Lerp(0f, vehicleData.maximumVehicleSpeed, distToFinal / 3.0f);
-            if (targetSpeed < 1.0f) targetSpeed = 1.0f; 
+            return;
         }
 
-        float accelRate = (_currentSpeed < targetSpeed) ? _acceleration : _deceleration;
-        _currentSpeed = Mathf.MoveTowards(_currentSpeed, targetSpeed, accelRate * Time.deltaTime);
+        Vector2Int currentCell = new Vector2Int(
+            Mathf.FloorToInt(transform.position.x / WorldManager.Instance.cellSize),
+            Mathf.FloorToInt(transform.position.z / WorldManager.Instance.cellSize)
+        );
 
-        float step = _currentSpeed * Time.deltaTime;
-        transform.position = Vector3.MoveTowards(transform.position, _currentWaypoint, step);
-
-        Vector3 direction = (_currentWaypoint - transform.position).normalized;
-        if (direction != Vector3.zero && direction.sqrMagnitude > 0.01f)
+        Vector2Int destinationPort;
+        if (currentState == VehicleState.Outbound && targetForRoute != null)
         {
-            Quaternion targetRotation = Quaternion.LookRotation(direction);
-            transform.rotation = Quaternion.RotateTowards(transform.rotation, targetRotation, Time.deltaTime * 500f); 
+            destinationPort = targetForRoute.GetClosestPort(PortType.Entry, networkForRoute, currentCell);
+        }
+        else
+        {
+            destinationPort = homeBuilding.GetClosestPort(PortType.Entry, networkForRoute, currentCell);
         }
 
-        if (Vector3.Distance(transform.position, _currentWaypoint) < 0.05f)
-        {
-            if (_activePath.Count > 0) _currentWaypoint = _activePath.Dequeue();
-            else
-            {
-                _isMoving = false;
-                _currentSpeed = 0f; 
-                OnDestinationReached();
-            }
-        }
+        RequestConveyorRoute(
+            GetWorldPositionOfPort(destinationPort),
+            true,
+            false,
+            destinationPort,
+            RouteRerouteReason.GraphRebuild);
     }
 
     private void OnDestinationReached()
     {
         if (currentState == VehicleState.Outbound) StartCoroutine(WaitAtTarget());
         else if (currentState == VehicleState.Inbound) StartCoroutine(WaitAtHome());
+    }
+
+    public void NotifyConveyorDestinationReached()
+    {
+        isConveyorMoving = false;
+        conveyorCurrentSpeed = 0f;
+        OnDestinationReached();
+    }
+
+    public float GetVehicleLengthUnits()
+    {
+        if (vehicleData == null) return 1f;
+        if (vehicleData.vehicleLengthUnits > 0f) return vehicleData.vehicleLengthUnits;
+        return vehicleData.isLongVehicle ? 2.5f : 1f;
+    }
+
+    public float GetMinimumFollowingGapUnits()
+    {
+        return vehicleData != null ? Mathf.Max(0f, vehicleData.minimumFollowingGapUnits) : 0.5f;
+    }
+
+    public float GetDesiredTimeHeadwaySeconds()
+    {
+        return vehicleData != null ? Mathf.Max(0f, vehicleData.desiredTimeHeadwaySeconds) : 1.5f;
+    }
+
+    public float GetAccelerationUnitsPerSecondSquared()
+    {
+        return vehicleData != null && vehicleData.accelerationUnitsPerSecondSquared > 0f ? vehicleData.accelerationUnitsPerSecondSquared : DefaultAcceleration;
+    }
+
+    public float GetDecelerationUnitsPerSecondSquared()
+    {
+        return vehicleData != null && vehicleData.decelerationUnitsPerSecondSquared > 0f ? vehicleData.decelerationUnitsPerSecondSquared : DefaultDeceleration;
+    }
+
+    public float GetEmergencyDecelerationUnitsPerSecondSquared()
+    {
+        return vehicleData != null && vehicleData.emergencyDecelerationUnitsPerSecondSquared > 0f ? vehicleData.emergencyDecelerationUnitsPerSecondSquared : DefaultEmergencyDeceleration;
+    }
+
+    public float GetMaximumJerkUnitsPerSecondCubed()
+    {
+        return vehicleData != null && vehicleData.maximumJerkUnitsPerSecondCubed > 0f ? vehicleData.maximumJerkUnitsPerSecondCubed : DefaultMaximumJerk;
+    }
+
+    public float GetMaximumSpeedUnitsPerSecond()
+    {
+        return vehicleData != null ? Mathf.Max(0f, vehicleData.maximumVehicleSpeed) : 0f;
     }
 
     private IEnumerator WaitAtTarget()
@@ -263,15 +423,27 @@ public class VehicleAI : MonoBehaviour
     private IEnumerator WaitAtHome()
     {
         yield return new WaitForSeconds(3f);
+        ApplyPendingAssignment();
         if (targetBuilding != null) DispatchTo(targetBuilding, _activeNetwork);
         else RecallAndDeactivate();
+    }
+
+    private void ApplyPendingAssignment()
+    {
+        if (!_hasPendingAssignment) return;
+
+        targetBuilding = _pendingTargetBuilding;
+        _activeNetwork = _pendingNetwork;
+        _pendingTargetBuilding = null;
+        _pendingNetwork = null;
+        _hasPendingAssignment = false;
     }
 
     // --- HELPERS ---
 
     private void TeleportToPort(Vector2Int portCell)
     {
-        transform.position = GetWorldPositionOfPort(portCell) + (Vector3.up * 0.2f); 
+        transform.position = GetWorldPositionOfPort(portCell) + (Vector3.up * VehicleRoadClearance);
     }
 
     private Vector3 GetWorldPositionOfPort(Vector2Int portCell)
@@ -284,10 +456,54 @@ public class VehicleAI : MonoBehaviour
         
         return new Vector3(x, y, z);
     }
-    
-    private void ClearPathCaches()
+
+    private string GetVehicleDebugName()
     {
-        _cachedOutboundPath = null;
-        _cachedInboundPath = null;
+        if (vehicleData != null && !string.IsNullOrEmpty(vehicleData.vehicleName))
+        {
+            return vehicleData.vehicleName;
+        }
+
+        return name;
+    }
+
+    private string DescribeTrafficRouteFailure(TrafficRoute route)
+    {
+        string description =
+            $"state={currentState}, home={DescribeBuilding(homeBuilding)}, target={DescribeBuilding(targetBuilding)}, activeNetwork={DescribeNetwork(_activeNetwork)}";
+
+        if (route == null)
+        {
+            return description + ", reason=Path task returned null route.";
+        }
+
+        description +=
+            $", reason={route.FailureReason}, rerouteReason={route.RerouteReason}, edgeCount={(route.ManagedEdges != null ? route.ManagedEdges.Count : 0)}";
+
+        if (route.Corridor != null)
+        {
+            description +=
+                $", graphVersion={route.Corridor.GraphVersion}, hasStartPort={route.Corridor.HasStartPortCell}, startPort={route.Corridor.StartPortCell}, hasTargetPort={route.Corridor.HasTargetPortCell}, targetPort={route.Corridor.TargetPortCell}";
+
+            if (route.Corridor.Diagnostics.Count > 0)
+            {
+                RouteDiagnostic firstDiagnostic = route.Corridor.Diagnostics[0];
+                description +=
+                    $", diagnostic={firstDiagnostic.FailureReason}: {firstDiagnostic.Message}";
+            }
+        }
+
+        return description;
+    }
+
+    private string DescribeBuilding(Building building)
+    {
+        if (building == null) return "null";
+        return building.data != null ? building.data.buildingName : building.name;
+    }
+
+    private string DescribeNetwork(RoadNetwork network)
+    {
+        return network != null ? network.id.ToString() : "null";
     }
 }

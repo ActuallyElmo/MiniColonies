@@ -23,6 +23,8 @@ public class Building : MonoBehaviour
     private List<GameObject> portIcons = new List<GameObject>();
     private bool _needsPathRecalculation = false;
     private Coroutine _routeRecalculationCoroutine;
+    private Coroutine _trafficBackendSubscriptionCoroutine;
+    private bool _subscribedToTrafficReady;
 
     public class RouteData
     {
@@ -55,6 +57,13 @@ public class Building : MonoBehaviour
             {
                 SpawnVehicles(vData, 20);
             }
+        }
+
+        bool wasAlreadySubscribed = _subscribedToTrafficReady;
+        TrySubscribeToTrafficReady();
+        if (wasAlreadySubscribed && HasPublishedTrafficNetwork())
+        {
+            HandleTrafficReady();
         }
     }
 
@@ -114,15 +123,27 @@ public class Building : MonoBehaviour
     
     private void OnEnable()
     {
-        // Listen to the new Backend instead of the old monolithic manager
-        if (TrafficSystemBackend.Instance != null) 
-            TrafficSystemBackend.Instance.OnTrafficNetworkReady += HandleTrafficReady;
+        TrySubscribeToTrafficReady();
+        if (!_subscribedToTrafficReady && _trafficBackendSubscriptionCoroutine == null)
+        {
+            _trafficBackendSubscriptionCoroutine = StartCoroutine(WaitForTrafficBackendSubscription());
+        }
     }
 
     private void OnDisable()
     {
-        if (TrafficSystemBackend.Instance != null) 
+        if (_trafficBackendSubscriptionCoroutine != null)
+        {
+            StopCoroutine(_trafficBackendSubscriptionCoroutine);
+            _trafficBackendSubscriptionCoroutine = null;
+        }
+
+        if (_subscribedToTrafficReady && TrafficSystemBackend.Instance != null)
+        {
             TrafficSystemBackend.Instance.OnTrafficNetworkReady -= HandleTrafficReady;
+        }
+
+        _subscribedToTrafficReady = false;
     }
 
     public void OnNetworksUpdated()
@@ -132,6 +153,8 @@ public class Building : MonoBehaviour
 
     private void HandleTrafficReady()
     {
+        if (!isActiveAndEnabled || data == null) return;
+
         //if (!_needsPathRecalculation) return;
         //_needsPathRecalculation = false;
         
@@ -151,6 +174,12 @@ public class Building : MonoBehaviour
         if (data is PopHousingBuildingData)
         {
             RouteData bestRoute = FindBestFactoryRoute();
+
+            if (bestRoute == null && spawnedVehicles.Count > 0)
+            {
+                Debug.LogWarning(
+                    $"{DescribeBuildingForDispatch()} could not dispatch vehicles to factories. {DescribeFactoryRouteFailure()}");
+            }
             
             foreach (VehicleAI vAI in spawnedVehicles)
             {
@@ -217,5 +246,106 @@ public class Building : MonoBehaviour
             }
         }
         return bestRoute;
+    }
+
+    private IEnumerator WaitForTrafficBackendSubscription()
+    {
+        while (isActiveAndEnabled && TrafficSystemBackend.Instance == null)
+        {
+            yield return null;
+        }
+
+        _trafficBackendSubscriptionCoroutine = null;
+        TrySubscribeToTrafficReady();
+    }
+
+    private bool TrySubscribeToTrafficReady()
+    {
+        if (_subscribedToTrafficReady || TrafficSystemBackend.Instance == null)
+        {
+            return _subscribedToTrafficReady;
+        }
+
+        TrafficSystemBackend.Instance.OnTrafficNetworkReady += HandleTrafficReady;
+        _subscribedToTrafficReady = true;
+
+        if (HasPublishedTrafficNetwork())
+        {
+            HandleTrafficReady();
+        }
+
+        return true;
+    }
+
+    private bool HasPublishedTrafficNetwork()
+    {
+        return TrafficSystemBackend.Instance != null &&
+               TrafficSystemBackend.Instance.allEdges != null &&
+               TrafficSystemBackend.Instance.allEdges.Count > 0;
+    }
+
+    private string DescribeFactoryRouteFailure()
+    {
+        int networkCount = validNetworks != null ? validNetworks.Count : 0;
+        int networksWithExitPorts = 0;
+        int factoriesOnSharedNetworks = 0;
+        int factoriesWithEntryPorts = 0;
+
+        if (validNetworks != null)
+        {
+            foreach (RoadNetwork network in validNetworks)
+            {
+                if (network == null) continue;
+
+                if (HasPortOnNetwork(this, network, PortType.Exit))
+                {
+                    networksWithExitPorts++;
+                }
+
+                if (network.connectedBuildings == null) continue;
+
+                foreach (Building building in network.connectedBuildings)
+                {
+                    if (building == null || !(building.data is ResourceProductionBuildingData))
+                    {
+                        continue;
+                    }
+
+                    factoriesOnSharedNetworks++;
+                    if (building.validNetworks.Contains(network) &&
+                        HasPortOnNetwork(building, network, PortType.Entry))
+                    {
+                        factoriesWithEntryPorts++;
+                    }
+                }
+            }
+        }
+
+        return
+            $"validNetworks={networkCount}, networksWithExitPorts={networksWithExitPorts}, factoriesOnSharedNetworks={factoriesOnSharedNetworks}, factoriesWithEntryPorts={factoriesWithEntryPorts}.";
+    }
+
+    private bool HasPortOnNetwork(Building building, RoadNetwork network, PortType desiredFlow)
+    {
+        if (building == null || network == null) return false;
+
+        foreach (var kvp in building.globalPorts)
+        {
+            bool flowMatches = kvp.Value == desiredFlow || kvp.Value == PortType.Both;
+            if (flowMatches &&
+                building.portNetworks.TryGetValue(kvp.Key, out RoadNetwork portNetwork) &&
+                portNetwork == network)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private string DescribeBuildingForDispatch()
+    {
+        string buildingName = data != null ? data.buildingName : name;
+        return $"Building {buildingName} at {originCell}";
     }
 }
