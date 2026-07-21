@@ -8,7 +8,6 @@ public enum TrafficGraphCompilerStage
     GenerateLanes,
     GenerateLegalMovements,
     BuildMovementGeometry,
-    Validate,
     Publish,
     Complete
 }
@@ -105,9 +104,6 @@ public sealed class TrafficGraphCompiler
             case TrafficGraphCompilerStage.BuildMovementGeometry:
                 TrafficGraphCompilerStages.BuildMovementGeometry(_context);
                 break;
-            case TrafficGraphCompilerStage.Validate:
-                TrafficGraphCompilerStages.Validate(_context);
-                break;
             case TrafficGraphCompilerStage.Publish:
                 if (!_context.Diagnostics.HasErrors)
                 {
@@ -141,9 +137,6 @@ public sealed class TrafficGraphCompiler
                 Stage = TrafficGraphCompilerStage.BuildMovementGeometry;
                 break;
             case TrafficGraphCompilerStage.BuildMovementGeometry:
-                Stage = TrafficGraphCompilerStage.Validate;
-                break;
-            case TrafficGraphCompilerStage.Validate:
                 Stage = TrafficGraphCompilerStage.Publish;
                 break;
             case TrafficGraphCompilerStage.Publish:

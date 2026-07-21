@@ -33,6 +33,8 @@ public class ConveyorTrafficManager : MonoBehaviour
     private readonly List<VehicleAI> _activeVehicles = new List<VehicleAI>();
     private readonly HashSet<TrafficEdge> _activeEdges = new HashSet<TrafficEdge>();
     private readonly List<TrafficEdge> _tickEdges = new List<TrafficEdge>();
+    private readonly List<TrafficOccupantRecord> _tickOccupants =
+        new List<TrafficOccupantRecord>();
     private readonly HashSet<VehicleAI> _vehiclesTickedThisStep = new HashSet<VehicleAI>();
     private readonly List<VehicleAI> _graphRebuildVehicles = new List<VehicleAI>();
     private readonly TrafficRuntimeState _runtimeState = new TrafficRuntimeState();
@@ -598,9 +600,15 @@ public class ConveyorTrafficManager : MonoBehaviour
 
             IReadOnlyList<TrafficOccupantRecord> occupants =
                 _runtimeState.GetOccupants(edge);
+            _tickOccupants.Clear();
             for (int i = 0; i < occupants.Count; i++)
             {
-                TrafficOccupantRecord record = occupants[i];
+                _tickOccupants.Add(occupants[i]);
+            }
+
+            for (int i = 0; i < _tickOccupants.Count; i++)
+            {
+                TrafficOccupantRecord record = _tickOccupants[i];
                 VehicleAI vehicle = record != null ? record.Vehicle : null;
                 if (vehicle != null &&
                     vehicle.currentEdge == edge &&

@@ -169,6 +169,94 @@ public sealed class TrafficGraphValidatorTests
     }
 
     [Test]
+    public void CompilerPullsWideIntersectionLaneEndsBehindVisualCap()
+    {
+        RoadProfile profile = CompileRoadProfile(
+            "wide-intersection-road",
+            RoadPermissionMask.GeneralRoad,
+            VehicleCapabilityMask.GroundRoad,
+            RoadMovementPolicyMask.All,
+            0.9f,
+            0.3f,
+            3);
+        Vector2Int intersection = Vector2Int.zero;
+        Vector3 intersectionCenter = new Vector3(0.5f, 0f, 0.5f);
+
+        RoadNetworkSnapshot snapshot = RoadNetworkSnapshot.CreateForCompilation(
+            1,
+            1,
+            1f,
+            1f,
+            new[]
+            {
+                CreateRoadCell(
+                    new Vector2Int(-1, 0),
+                    4,
+                    RoadNodeKind.RoadEnd,
+                    profile),
+                CreateRoadCell(
+                    intersection,
+                    1 | 4 | 64,
+                    RoadNodeKind.Intersection,
+                    profile),
+                CreateRoadCell(
+                    new Vector2Int(1, 0),
+                    64,
+                    RoadNodeKind.RoadEnd,
+                    profile),
+                CreateRoadCell(
+                    new Vector2Int(0, 1),
+                    16,
+                    RoadNodeKind.RoadEnd,
+                    profile)
+            },
+            new[] { profile });
+
+        Assert.IsTrue(TrafficGraphCompiler.TryCompile(
+            snapshot,
+            new TrafficGraphVersion(1),
+            out TrafficGraphSnapshot graph,
+            out TrafficDiagnosticCollection diagnostics));
+        Assert.IsFalse(diagnostics.HasErrors);
+
+        float expectedMinimumPullback = (profile.RoadWidthUnits + profile.CurbWidthUnits) * 0.5f;
+        int checkedIncomingLanes = 0;
+        var incomingEndpointsByLeg = new Dictionary<int, List<Vector3>>();
+        for (int i = 0; i < graph.Lanes.Count; i++)
+        {
+            LaneRecord lane = graph.Lanes[i];
+            if (lane.EndAnchorCell != intersection) continue;
+
+            Assert.IsTrue(graph.TryGetGeometry(
+                lane.GeometryId,
+                out TrafficGeometryRecord geometry));
+            Vector3 laneEnd = geometry.Samples[geometry.Samples.Count - 1];
+            laneEnd.y = 0f;
+            Assert.GreaterOrEqual(
+                Vector3.Distance(laneEnd, intersectionCenter),
+                expectedMinimumPullback);
+            if (!incomingEndpointsByLeg.TryGetValue(
+                    lane.EndLegDirectionBit,
+                    out List<Vector3> endpoints))
+            {
+                endpoints = new List<Vector3>();
+                incomingEndpointsByLeg.Add(lane.EndLegDirectionBit, endpoints);
+            }
+            endpoints.Add(laneEnd);
+            checkedIncomingLanes++;
+        }
+
+        Assert.Greater(checkedIncomingLanes, 0);
+        foreach (KeyValuePair<int, List<Vector3>> kvp in incomingEndpointsByLeg)
+        {
+            AssertStopLineIsPerpendicularToLeg(
+                kvp.Key,
+                intersectionCenter,
+                kvp.Value);
+        }
+    }
+
+    [Test]
     public void VehicleVariationUsesPermissionMaskWithoutConcreteBranch()
     {
         RoadProfile serviceRoad = CompileRoadProfile(
@@ -399,16 +487,19 @@ public sealed class TrafficGraphValidatorTests
         string key,
         RoadPermissionMask permissions,
         VehicleCapabilityMask capabilities,
-        RoadMovementPolicyMask movements)
+        RoadMovementPolicyMask movements,
+        float roadWidth = 0.5f,
+        float curbWidth = 0.1f,
+        int lanesPerWay = 1)
     {
         RoadType roadType = ScriptableObject.CreateInstance<RoadType>();
         roadType.trafficProfileKey = key;
         roadType.roadName = key;
-        roadType.lanesPerWay = 1;
+        roadType.lanesPerWay = lanesPerWay;
         roadType.isTwoWay = true;
         roadType.speedLimit = 12f;
-        roadType.roadWidth = 0.5f;
-        roadType.curbWidth = 0.1f;
+        roadType.roadWidth = roadWidth;
+        roadType.curbWidth = curbWidth;
         roadType.allowedTrafficPermissions = permissions;
         roadType.allowedVehicleCapabilities = capabilities;
         roadType.supportedTrafficMovements = movements;
@@ -419,6 +510,46 @@ public sealed class TrafficGraphValidatorTests
             out RoadProfile profile));
         UnityEngine.Object.DestroyImmediate(roadType);
         return profile;
+    }
+
+    private static void AssertStopLineIsPerpendicularToLeg(
+        int legDirectionBit,
+        Vector3 intersectionCenter,
+        IReadOnlyList<Vector3> endpoints)
+    {
+        if (endpoints.Count < 2) return;
+
+        Vector2 legDirection2 = DirectionVector(legDirectionBit);
+        Vector3 legDirection = new Vector3(
+            legDirection2.x,
+            0f,
+            legDirection2.y);
+        float projection = Vector3.Dot(
+            endpoints[0] - intersectionCenter,
+            legDirection);
+        for (int i = 1; i < endpoints.Count; i++)
+        {
+            Assert.AreEqual(
+                projection,
+                Vector3.Dot(endpoints[i] - intersectionCenter, legDirection),
+                0.001f);
+        }
+    }
+
+    private static Vector2 DirectionVector(int directionBit)
+    {
+        switch (directionBit)
+        {
+            case 1: return Vector2.up;
+            case 2: return new Vector2(1f, 1f).normalized;
+            case 4: return Vector2.right;
+            case 8: return new Vector2(1f, -1f).normalized;
+            case 16: return Vector2.down;
+            case 32: return new Vector2(-1f, -1f).normalized;
+            case 64: return Vector2.left;
+            case 128: return new Vector2(-1f, 1f).normalized;
+            default: return Vector2.zero;
+        }
     }
 
     private static VehicleTrafficProfile CompileVehicleProfile(

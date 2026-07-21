@@ -241,7 +241,26 @@ public class RoadSystemBackend : MonoBehaviour
                 SaveSnapshot(cell); // SNAPSHOT
                 road.SetRoadType(newType);
                 MarkCellDirty(cell);
+                UpdateIntersectionState(road);
+                MarkConnectedCellsDirtyForRoadTypeChange(road);
             }
+        }
+    }
+
+    private void MarkConnectedCellsDirtyForRoadTypeChange(RoadCell road)
+    {
+        if (road == null) return;
+
+        for (int i = 0; i < 8; i++)
+        {
+            int bit = 1 << i;
+            if (!road.HasConnection(bit)) continue;
+
+            Vector2Int neighborPos = GetNeighborPosition(road.gridPosition, bit);
+            if (!_roads.TryGetValue(neighborPos, out RoadCell neighbor)) continue;
+
+            MarkCellDirty(neighborPos);
+            UpdateIntersectionState(neighbor);
         }
     }
 

@@ -126,6 +126,8 @@ internal sealed class LaneSegmentDraft
 internal static class TrafficGraphCompilerStages
 {
     private const float NodePullback = 0.35f;
+    private const float IntersectionStopLinePaddingUnits = 0.05f;
+    private const float MaximumNodePullback = 0.85f;
     private const int MovementCurveSamples = 12;
     private const int LaneCenterlineSmoothingIterations = 3;
     private const float LaneChangeLengthUnits = 0.8f;
@@ -468,215 +470,6 @@ internal static class TrafficGraphCompilerStages
         context.Geometry.Sort((left, right) => left.Id.CompareTo(right.Id));
     }
 
-    public static void Validate(TrafficGraphCompilationContext context)
-    {
-        var sectionIds = new HashSet<RoadSectionId>();
-        var laneIds = new HashSet<LaneId>();
-        var movementIds = new HashSet<MovementId>();
-        var geometryIds = new HashSet<TrafficGeometryId>();
-        var controlledNodeIds = new HashSet<ControlledNodeId>();
-        var ownerIds = new HashSet<ControlledNodeId>();
-        var laneSegmentIds = new HashSet<LaneSegmentId>();
-        var portAnchorIds = new HashSet<BuildingPortAnchorId>();
-
-        for (int i = 0; i < context.Sections.Count; i++)
-        {
-            SectionDraft section = context.Sections[i];
-            if (!section.Id.IsValid || !sectionIds.Add(section.Id))
-            {
-                AddDuplicateIdError(context, section.StartCell, section.Id.ToString());
-            }
-
-            if (!IsDirectionBit(section.StartLegDirectionBit) ||
-                !IsDirectionBit(section.EndLegDirectionBit))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.InvalidLegDirection,
-                    "Road section immediate leg direction is invalid.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        section.StartCell,
-                        section.Id.ToString()));
-            }
-        }
-
-        for (int i = 0; i < context.Geometry.Count; i++)
-        {
-            TrafficGeometryRecord geometry = context.Geometry[i];
-            if (!geometry.Id.IsValid || !geometryIds.Add(geometry.Id))
-            {
-                AddDuplicateIdError(context, Vector2Int.zero, geometry.Id.ToString());
-            }
-
-            if (geometry.Samples.Count < 2 ||
-                geometry.LengthUnits <= 0f ||
-                float.IsNaN(geometry.LengthUnits) ||
-                float.IsInfinity(geometry.LengthUnits))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.MissingLaneReference,
-                    "Drivable geometry must contain a positive finite curve.",
-                    new TrafficDiagnosticSource(
-                        context.Version,
-                        geometry.Id.ToString(),
-                        string.Empty,
-                        Vector2Int.zero,
-                        false,
-                        VehicleSimulationId.Invalid));
-            }
-        }
-
-        for (int i = 0; i < context.Lanes.Count; i++)
-        {
-            LaneDraft lane = context.Lanes[i];
-            if (!lane.Id.IsValid || !laneIds.Add(lane.Id))
-            {
-                AddDuplicateIdError(context, lane.StartAnchorCell, lane.Id.ToString());
-            }
-
-            if (!sectionIds.Contains(lane.Section.Id) ||
-                !geometryIds.Contains(lane.GeometryId))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.MissingLaneReference,
-                    "Lane references a missing section or lane geometry record.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        lane.StartAnchorCell,
-                        lane.Id.ToString()));
-            }
-
-            if (!IsDirectionBit(lane.StartLegDirectionBit) ||
-                !IsDirectionBit(lane.EndLegDirectionBit))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.InvalidLegDirection,
-                    "Lane immediate approach metadata is invalid.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        lane.StartAnchorCell,
-                        lane.Id.ToString()));
-            }
-        }
-
-        for (int i = 0; i < context.MovementOwners.Count; i++)
-        {
-            MovementOwnerRecord owner = context.MovementOwners[i];
-            if (!owner.Id.IsValid || !ownerIds.Add(owner.Id))
-            {
-                AddDuplicateIdError(context, owner.PrimaryCell, owner.Id.ToString());
-            }
-        }
-
-        for (int i = 0; i < context.ControlledNodes.Count; i++)
-        {
-            ControlledNodeRecord node = context.ControlledNodes[i];
-            if (!node.Id.IsValid || !controlledNodeIds.Add(node.Id))
-            {
-                AddDuplicateIdError(context, node.GridPosition, node.Id.ToString());
-            }
-        }
-
-        for (int i = 0; i < context.LaneSegments.Count; i++)
-        {
-            LaneSegmentDraft segment = context.LaneSegments[i];
-            if (!segment.Id.IsValid || !laneSegmentIds.Add(segment.Id))
-            {
-                AddDuplicateIdError(
-                    context,
-                    segment.Lane != null
-                        ? segment.Lane.StartAnchorCell
-                        : Vector2Int.zero,
-                    segment.Id.ToString());
-            }
-
-            if (segment.Lane == null ||
-                !laneIds.Contains(segment.Lane.Id) ||
-                !geometryIds.Contains(segment.GeometryId) ||
-                segment.EndDistanceUnits <= segment.StartDistanceUnits)
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.MissingLaneReference,
-                    "Lane traversal segment references missing lane data or invalid distance bounds.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        segment.Lane != null
-                            ? segment.Lane.StartAnchorCell
-                            : Vector2Int.zero,
-                        segment.Id.ToString()));
-            }
-        }
-
-        for (int i = 0; i < context.PortAnchors.Count; i++)
-        {
-            BuildingPortAnchorRecord anchor = context.PortAnchors[i];
-            if (!anchor.Id.IsValid || !portAnchorIds.Add(anchor.Id))
-            {
-                AddDuplicateIdError(context, anchor.PortCell, anchor.Id.ToString());
-            }
-        }
-
-        for (int i = 0; i < context.Movements.Count; i++)
-        {
-            MovementDraft movement = context.Movements[i];
-            if (!movement.Id.IsValid || !movementIds.Add(movement.Id))
-            {
-                AddDuplicateIdError(
-                    context,
-                    movement.OwnerCell,
-                    movement.Id.ToString());
-            }
-
-            if (!laneIds.Contains(movement.Source.Id) ||
-                !laneIds.Contains(movement.Target.Id) ||
-                !geometryIds.Contains(movement.GeometryId))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.MissingLaneReference,
-                    "Movement references a missing lane or geometry record.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        movement.OwnerCell,
-                        movement.Id.ToString()));
-            }
-
-            if (!IsDirectionBit(movement.FromDirectionBit) ||
-                !IsDirectionBit(movement.ToDirectionBit))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.InvalidLegDirection,
-                    "Movement has invalid immediate leg metadata.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        movement.OwnerCell,
-                        movement.Id.ToString()));
-            }
-
-            if (!ownerIds.Contains(movement.OwnerId))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.InvalidTransitionOwner,
-                    "Movement references a missing stable movement owner.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        movement.OwnerCell,
-                        movement.OwnerId.ToString()));
-            }
-
-            if (!laneSegmentIds.Contains(movement.SourceSegmentId) ||
-                !laneSegmentIds.Contains(movement.TargetSegmentId))
-            {
-                context.Diagnostics.AddError(
-                    TrafficDiagnosticCode.MissingLaneReference,
-                    "Movement references a missing lane traversal segment.",
-                    TrafficDiagnosticSource.ForCell(
-                        context.Version,
-                        movement.OwnerCell,
-                        movement.Id.ToString()));
-            }
-        }
-    }
-
     public static TrafficGraphSnapshot Publish(
         TrafficGraphCompilationContext context)
     {
@@ -850,20 +643,24 @@ internal static class TrafficGraphCompilerStages
         if (section.Centerline.Count >= 2 &&
             IsBoundary(context.Cells[section.StartCell]))
         {
-            section.Centerline[0] = Vector3.Lerp(
+            section.Centerline[0] = PullBoundaryPoint(
+                context,
+                context.Cells[section.StartCell],
                 section.Centerline[0],
                 section.Centerline[1],
-                NodePullback);
+                profile);
         }
 
         int last = section.Centerline.Count - 1;
         if (section.Centerline.Count >= 2 &&
             IsBoundary(context.Cells[section.EndCell]))
         {
-            section.Centerline[last] = Vector3.Lerp(
+            section.Centerline[last] = PullBoundaryPoint(
+                context,
+                context.Cells[section.EndCell],
                 section.Centerline[last],
                 section.Centerline[last - 1],
-                NodePullback);
+                profile);
         }
 
         ApplyChaikinInPlace(
@@ -877,6 +674,101 @@ internal static class TrafficGraphCompilerStages
                 section.CenterlineGeometryId,
                 section.Centerline));
         context.Sections.Add(section);
+    }
+
+    private static Vector3 PullBoundaryPoint(
+        TrafficGraphCompilationContext context,
+        NormalizedRoadCell boundaryCell,
+        Vector3 boundaryPoint,
+        Vector3 inwardPoint,
+        RoadProfile sectionProfile)
+    {
+        float segmentLength = Vector3.Distance(boundaryPoint, inwardPoint);
+        if (segmentLength <= 0.0001f) return boundaryPoint;
+
+        float pullbackUnits = NodePullback * segmentLength;
+        if (boundaryCell != null &&
+            boundaryCell.NodeKind == RoadNodeKind.Intersection)
+        {
+            pullbackUnits = Mathf.Max(
+                pullbackUnits,
+                GetIntersectionStopLinePullbackUnits(
+                    context,
+                    boundaryCell,
+                    sectionProfile));
+        }
+
+        float t = Mathf.Clamp(
+            pullbackUnits / segmentLength,
+            NodePullback,
+            MaximumNodePullback);
+        return Vector3.Lerp(boundaryPoint, inwardPoint, t);
+    }
+
+    private static float GetIntersectionStopLinePullbackUnits(
+        TrafficGraphCompilationContext context,
+        NormalizedRoadCell intersectionCell,
+        RoadProfile sectionProfile)
+    {
+        float maxRoadWidth = sectionProfile != null
+            ? sectionProfile.RoadWidthUnits
+            : 0f;
+        float maxCurbWidth = sectionProfile != null
+            ? sectionProfile.CurbWidthUnits
+            : 0f;
+
+        if (context != null &&
+            intersectionCell != null)
+        {
+            if (context.Source.TryGetRoadProfile(
+                    intersectionCell.Source.RoadProfileId,
+                    out RoadProfile intersectionProfile))
+            {
+                AccumulateProfileWidth(
+                    intersectionProfile,
+                    ref maxRoadWidth,
+                    ref maxCurbWidth);
+            }
+
+            for (int i = 0; i < intersectionCell.LegDirectionBits.Count; i++)
+            {
+                Vector2Int neighbor =
+                    RoadGridDirectionUtility.GetNeighborPosition(
+                        intersectionCell.Source.GridPosition,
+                        intersectionCell.LegDirectionBits[i]);
+                if (!context.Cells.TryGetValue(
+                        neighbor,
+                        out NormalizedRoadCell neighborCell) ||
+                    neighborCell == null)
+                {
+                    continue;
+                }
+
+                if (context.Source.TryGetRoadProfile(
+                        neighborCell.Source.RoadProfileId,
+                        out RoadProfile neighborProfile))
+                {
+                    AccumulateProfileWidth(
+                        neighborProfile,
+                        ref maxRoadWidth,
+                        ref maxCurbWidth);
+                }
+            }
+        }
+
+        return (maxRoadWidth + maxCurbWidth) * 0.5f +
+               IntersectionStopLinePaddingUnits;
+    }
+
+    private static void AccumulateProfileWidth(
+        RoadProfile profile,
+        ref float maxRoadWidth,
+        ref float maxCurbWidth)
+    {
+        if (profile == null) return;
+
+        maxRoadWidth = Mathf.Max(maxRoadWidth, profile.RoadWidthUnits);
+        maxCurbWidth = Mathf.Max(maxCurbWidth, profile.CurbWidthUnits);
     }
 
     private static void AddDirectionalLanes(
@@ -918,6 +810,7 @@ internal static class TrafficGraphCompilerStages
 
             lane.Samples.AddRange(
                 BuildLaneSamples(
+                    context,
                     section,
                     reverse,
                     ordinal,
@@ -930,6 +823,7 @@ internal static class TrafficGraphCompilerStages
     }
 
     private static List<Vector3> BuildLaneSamples(
+        TrafficGraphCompilationContext context,
         SectionDraft section,
         bool reverse,
         int ordinal,
@@ -963,7 +857,88 @@ internal static class TrafficGraphCompilerStages
             result.Add(source[i] + right * lateralOffset);
         }
 
+        AlignIntersectionLaneEndpoints(
+            context,
+            section,
+            reverse,
+            lateralOffset,
+            source,
+            result);
         return result;
+    }
+
+    private static void AlignIntersectionLaneEndpoints(
+        TrafficGraphCompilationContext context,
+        SectionDraft section,
+        bool reverse,
+        float lateralOffset,
+        IReadOnlyList<Vector3> centerSamples,
+        List<Vector3> samples)
+    {
+        if (context == null ||
+            section == null ||
+            centerSamples == null ||
+            samples == null ||
+            samples.Count == 0 ||
+            centerSamples.Count != samples.Count)
+        {
+            return;
+        }
+
+        Vector2Int startCell = reverse ? section.EndCell : section.StartCell;
+        Vector2Int endCell = reverse ? section.StartCell : section.EndCell;
+        int startLegBit = reverse
+            ? section.EndLegDirectionBit
+            : section.StartLegDirectionBit;
+        int endLegBit = reverse
+            ? section.StartLegDirectionBit
+            : section.EndLegDirectionBit;
+
+        if (IsIntersectionCell(context, startCell))
+        {
+            samples[0] = OffsetBoundarySampleByLeg(
+                centerSamples[0],
+                startLegBit,
+                lateralOffset,
+                false);
+        }
+
+        int last = samples.Count - 1;
+        if (IsIntersectionCell(context, endCell))
+        {
+            samples[last] = OffsetBoundarySampleByLeg(
+                centerSamples[last],
+                endLegBit,
+                lateralOffset,
+                true);
+        }
+    }
+
+    private static bool IsIntersectionCell(
+        TrafficGraphCompilationContext context,
+        Vector2Int cell)
+    {
+        return context.Cells.TryGetValue(cell, out NormalizedRoadCell normalized) &&
+               normalized.NodeKind == RoadNodeKind.Intersection;
+    }
+
+    private static Vector3 OffsetBoundarySampleByLeg(
+        Vector3 centerSample,
+        int legDirectionBit,
+        float lateralOffset,
+        bool laneEntersBoundary)
+    {
+        Vector2 legDirection2 = DirectionVector(legDirectionBit);
+        Vector3 legDirection = new Vector3(
+            legDirection2.x,
+            0f,
+            legDirection2.y);
+        if (laneEntersBoundary) legDirection = -legDirection;
+
+        Vector3 right = legDirection.sqrMagnitude > 0.000001f
+            ? Vector3.Cross(Vector3.up, legDirection.normalized)
+            : Vector3.right;
+        return centerSample + right * lateralOffset;
     }
 
     private static void GenerateTransitionMovements(
@@ -2500,17 +2475,4 @@ internal static class TrafficGraphCompilerStages
         return bit <= 8 ? bit << 4 : bit >> 4;
     }
 
-    private static void AddDuplicateIdError(
-        TrafficGraphCompilationContext context,
-        Vector2Int cell,
-        string stableId)
-    {
-        context.Diagnostics.AddError(
-            TrafficDiagnosticCode.DuplicateStableId,
-            "Compiled traffic graph contains a duplicate or invalid stable ID.",
-            TrafficDiagnosticSource.ForCell(
-                context.Version,
-                cell,
-                stableId));
-    }
 }

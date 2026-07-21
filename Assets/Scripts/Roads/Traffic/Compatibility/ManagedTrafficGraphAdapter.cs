@@ -29,7 +29,13 @@ public static class ManagedTrafficGraphAdapter
     {
         if (diagnostics == null) throw new ArgumentNullException(nameof(diagnostics));
         result = null;
-        if (!TrafficGraphValidator.Validate(graph, diagnostics)) return false;
+        if (graph == null)
+        {
+            diagnostics.AddError(
+                TrafficDiagnosticCode.MissingLaneReference,
+                "Adapter cannot build from a null traffic graph.");
+            return false;
+        }
 
         result = new ManagedTrafficGraphAdapterResult();
         var laneSegmentStartNodes = new Dictionary<LaneSegmentId, TrafficNode>();
