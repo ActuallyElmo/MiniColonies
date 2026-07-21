@@ -9,6 +9,7 @@ public sealed class VehicleTrafficProfile
     public const float CompatibilityServiceDecelerationUnitsPerSecondSquared = 15f;
     public const float CompatibilityEmergencyDecelerationUnitsPerSecondSquared = 30f;
     public const float CompatibilityTimeHeadwaySeconds = 0.15f;
+    public const float CompatibilityDriverReactionTimeSeconds = 0.25f;
     public const float CompatibilityStandstillGapUnits = 0.5f;
     public const float CompatibilityMaximumJerkUnitsPerSecondCubed = 30f;
 
@@ -22,6 +23,7 @@ public sealed class VehicleTrafficProfile
     public float ComfortableServiceDecelerationUnitsPerSecondSquared { get; }
     public float EmergencyDecelerationUnitsPerSecondSquared { get; }
     public float DesiredTimeHeadwaySeconds { get; }
+    public float DriverReactionTimeSeconds { get; }
     public float MinimumStandstillGapUnits { get; }
     public float MaximumJerkUnitsPerSecondCubed { get; }
     public VehicleCapabilityMask Capabilities { get; }
@@ -39,6 +41,7 @@ public sealed class VehicleTrafficProfile
         float comfortableServiceDecelerationUnitsPerSecondSquared,
         float emergencyDecelerationUnitsPerSecondSquared,
         float desiredTimeHeadwaySeconds,
+        float driverReactionTimeSeconds,
         float minimumStandstillGapUnits,
         float maximumJerkUnitsPerSecondCubed,
         VehicleCapabilityMask capabilities,
@@ -56,6 +59,7 @@ public sealed class VehicleTrafficProfile
             comfortableServiceDecelerationUnitsPerSecondSquared;
         EmergencyDecelerationUnitsPerSecondSquared = emergencyDecelerationUnitsPerSecondSquared;
         DesiredTimeHeadwaySeconds = desiredTimeHeadwaySeconds;
+        DriverReactionTimeSeconds = driverReactionTimeSeconds;
         MinimumStandstillGapUnits = minimumStandstillGapUnits;
         MaximumJerkUnitsPerSecondCubed = maximumJerkUnitsPerSecondCubed;
         Capabilities = capabilities;
@@ -145,6 +149,12 @@ public sealed class VehicleTrafficProfile
             source,
             diagnostics);
         ValidateNonNegative(
+            DriverReactionTimeSeconds,
+            TrafficDiagnosticCode.InvalidDriverReactionTime,
+            "Driver reaction time must be a non-negative finite value in seconds.",
+            source,
+            diagnostics);
+        ValidateNonNegative(
             MinimumStandstillGapUnits,
             TrafficDiagnosticCode.InvalidStandstillGap,
             "Minimum standstill gap must be a non-negative finite value in world units.",
@@ -200,7 +210,7 @@ public sealed class VehicleTrafficProfile
             sourceAsset.vehicleName,
             sourceAsset.name,
             FormattableString.Invariant(
-                $"GROUND_VEHICLE:{sourceAsset.maximumVehicleSpeed:R}:{sourceAsset.isLongVehicle}:{sourceAsset.isOffroadVehicle}:{sourceAsset.vehicleLengthUnits:R}:{sourceAsset.minimumFollowingGapUnits:R}:{sourceAsset.accelerationUnitsPerSecondSquared:R}:{sourceAsset.decelerationUnitsPerSecondSquared:R}:{sourceAsset.emergencyDecelerationUnitsPerSecondSquared:R}:{sourceAsset.desiredTimeHeadwaySeconds:R}:{sourceAsset.maximumJerkUnitsPerSecondCubed:R}:{(int)sourceAsset.trafficCapabilities}:{(int)sourceAsset.trafficRoadPermissions}"));
+                $"GROUND_VEHICLE:{sourceAsset.maximumVehicleSpeed:R}:{sourceAsset.isLongVehicle}:{sourceAsset.isOffroadVehicle}:{sourceAsset.vehicleLengthUnits:R}:{sourceAsset.minimumFollowingGapUnits:R}:{sourceAsset.accelerationUnitsPerSecondSquared:R}:{sourceAsset.decelerationUnitsPerSecondSquared:R}:{sourceAsset.emergencyDecelerationUnitsPerSecondSquared:R}:{sourceAsset.desiredTimeHeadwaySeconds:R}:{sourceAsset.driverReactionTimeSeconds:R}:{sourceAsset.maximumJerkUnitsPerSecondCubed:R}:{(int)sourceAsset.trafficCapabilities}:{(int)sourceAsset.trafficRoadPermissions}"));
         TrafficDiagnosticSource source = TrafficDiagnosticSource.ForProfile(sourceKey);
         if (!hasPersistentKey)
         {
@@ -246,6 +256,12 @@ public sealed class VehicleTrafficProfile
             nameof(sourceAsset.desiredTimeHeadwaySeconds),
             diagnostics,
             source);
+        float driverReactionTime = ApplyNonNegativeCompatibilityDefault(
+            sourceAsset.driverReactionTimeSeconds,
+            CompatibilityDriverReactionTimeSeconds,
+            nameof(sourceAsset.driverReactionTimeSeconds),
+            diagnostics,
+            source);
         float maximumJerk = ApplyPositiveCompatibilityDefault(
             sourceAsset.maximumJerkUnitsPerSecondCubed,
             CompatibilityMaximumJerkUnitsPerSecondCubed,
@@ -284,6 +300,7 @@ public sealed class VehicleTrafficProfile
             serviceDeceleration,
             emergencyDeceleration,
             timeHeadway,
+            driverReactionTime,
             sourceAsset.minimumFollowingGapUnits,
             maximumJerk,
             capabilities,
@@ -301,6 +318,23 @@ public sealed class VehicleTrafficProfile
         TrafficDiagnosticSource source)
     {
         if (value > 0f && !float.IsNaN(value) && !float.IsInfinity(value)) return value;
+        if (value < 0f || float.IsNaN(value) || float.IsInfinity(value)) return value;
+
+        diagnostics.AddWarning(
+            TrafficDiagnosticCode.CompatibilityDefaultApplied,
+            $"{fieldName} used compatibility default {fallback:R}.",
+            source);
+        return fallback;
+    }
+
+    private static float ApplyNonNegativeCompatibilityDefault(
+        float value,
+        float fallback,
+        string fieldName,
+        TrafficDiagnosticCollection diagnostics,
+        TrafficDiagnosticSource source)
+    {
+        if (value >= 0f && !float.IsNaN(value) && !float.IsInfinity(value)) return value;
         if (value < 0f || float.IsNaN(value) || float.IsInfinity(value)) return value;
 
         diagnostics.AddWarning(

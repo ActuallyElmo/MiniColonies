@@ -3,25 +3,20 @@ using UnityEngine;
 
 public class FreeForAllIntersectionController : IIntersectionController
 {
-    private class ApproachRequest
+    private class ReservedMovement
     {
-        public TrafficEdge movementEdge;
-        public MovementId movementId;
-        public VehicleSimulationId vehicleId;
-        public int sequence;
-        public int lastSeenTick;
+        public TrafficEdge MovementEdge;
+        public int LastSeenTick;
     }
 
     private const float MovementPathClearance = 0.12f;
-    private const float MinimumApproachDecisionDistance = 0.35f;
-    private const float ApproachDecisionMargin = 0.2f;
+    private const float ApproachBufferMinUnits = 0.65f;
+    private const float ApproachBufferVehicleLengthMultiplier = 3f;
     private readonly Dictionary<VehicleAI, TrafficEdge> _activeMovements = new Dictionary<VehicleAI, TrafficEdge>();
-    private readonly List<TrafficEdge> _movementEdges = new List<TrafficEdge>();
-    private readonly Dictionary<VehicleAI, ApproachRequest> _approachRequests =
-        new Dictionary<VehicleAI, ApproachRequest>();
-    private readonly List<VehicleAI> _staleApproachVehicles = new List<VehicleAI>();
+    private readonly Dictionary<VehicleAI, ReservedMovement> _reservedMovements =
+        new Dictionary<VehicleAI, ReservedMovement>();
+    private readonly List<VehicleAI> _staleReservedVehicles = new List<VehicleAI>();
     private int _tickIndex;
-    private int _nextApproachSequence;
 
     public Vector2Int Cell { get; private set; }
     public IntersectionRuleType RuleType => IntersectionRuleType.FreeForAll;
@@ -30,34 +25,32 @@ public class FreeForAllIntersectionController : IIntersectionController
     {
         Cell = cell;
         _activeMovements.Clear();
-        _movementEdges.Clear();
-        _approachRequests.Clear();
-        _staleApproachVehicles.Clear();
+        _reservedMovements.Clear();
+        _staleReservedVehicles.Clear();
         _tickIndex = 0;
-        _nextApproachSequence = 0;
-        if (movementEdges != null)
-        {
-            _movementEdges.AddRange(movementEdges);
-        }
     }
 
     public void Tick(float deltaTime)
     {
         _tickIndex++;
-        _staleApproachVehicles.Clear();
-        foreach (KeyValuePair<VehicleAI, ApproachRequest> request in _approachRequests)
+        _staleReservedVehicles.Clear();
+        foreach (KeyValuePair<VehicleAI, ReservedMovement> reserved in _reservedMovements)
         {
-            if (request.Key == null ||
-                request.Value == null ||
-                request.Value.lastSeenTick < _tickIndex - 1)
+            VehicleAI vehicle = reserved.Key;
+            ReservedMovement movement = reserved.Value;
+            if (vehicle == null ||
+                movement == null ||
+                movement.MovementEdge == null ||
+                movement.LastSeenTick < _tickIndex - 1 ||
+                vehicle.currentEdge == movement.MovementEdge)
             {
-                _staleApproachVehicles.Add(request.Key);
+                _staleReservedVehicles.Add(vehicle);
             }
         }
 
-        foreach (VehicleAI staleVehicle in _staleApproachVehicles)
+        foreach (VehicleAI staleVehicle in _staleReservedVehicles)
         {
-            _approachRequests.Remove(staleVehicle);
+            _reservedMovements.Remove(staleVehicle);
         }
     }
 
@@ -75,24 +68,25 @@ public class FreeForAllIntersectionController : IIntersectionController
         VehicleAI vehicle = request.Vehicle;
         TrafficEdge fromEdge = request.FromEdge;
         TrafficEdge movementEdge = request.MovementEdge;
-        if (vehicle == null || movementEdge == null) return false;
+        if (vehicle == null || fromEdge == null || movementEdge == null) return false;
+
+        if (!IsInsideApproachBuffer(vehicle, fromEdge))
+        {
+            _reservedMovements.Remove(vehicle);
+            return true;
+        }
 
         if (!IsLeadApproachVehicle(vehicle, fromEdge))
         {
-            _approachRequests.Remove(vehicle);
+            _reservedMovements.Remove(vehicle);
             return false;
         }
 
-        bool isInsideDecisionZone = IsInsideApproachDecisionZone(vehicle, fromEdge);
-        ApproachRequest queuedRequest = isInsideDecisionZone
-            ? RegisterApproach(request)
-            : null;
-        if (!isInsideDecisionZone)
+        if (HasMatchingReservation(vehicle, movementEdge))
         {
-            _approachRequests.Remove(vehicle);
+            RefreshReservation(vehicle);
+            return true;
         }
-
-        if (HasBlockedVehicleInside()) return false;
 
         foreach (KeyValuePair<VehicleAI, TrafficEdge> active in _activeMovements)
         {
@@ -101,27 +95,30 @@ public class FreeForAllIntersectionController : IIntersectionController
             if (PathsConflict(movementEdge, active.Value)) return false;
         }
 
-        foreach (KeyValuePair<VehicleAI, ApproachRequest> other in _approachRequests)
+        foreach (KeyValuePair<VehicleAI, ReservedMovement> reserved in _reservedMovements)
         {
-            if (other.Key == null ||
-                other.Key == vehicle ||
-                other.Value == null ||
-                other.Value.movementEdge == null ||
-                other.Value.movementEdge == movementEdge)
+            if (reserved.Key == null ||
+                reserved.Key == vehicle ||
+                reserved.Value == null ||
+                reserved.Value.MovementEdge == null ||
+                reserved.Value.MovementEdge == movementEdge)
             {
                 continue;
             }
 
-            if (queuedRequest != null &&
-                other.Value.sequence >= queuedRequest.sequence)
-            {
-                continue;
-            }
-
-            if (PathsConflict(movementEdge, other.Value.movementEdge))
+            if (PathsConflict(movementEdge, reserved.Value.MovementEdge))
             {
                 return false;
             }
+        }
+
+        if (IsInsideApproachBuffer(vehicle, fromEdge))
+        {
+            _reservedMovements[vehicle] = new ReservedMovement
+            {
+                MovementEdge = movementEdge,
+                LastSeenTick = _tickIndex
+            };
         }
 
         return true;
@@ -131,7 +128,7 @@ public class FreeForAllIntersectionController : IIntersectionController
     {
         if (vehicle != null && movementEdge != null)
         {
-            _approachRequests.Remove(vehicle);
+            _reservedMovements.Remove(vehicle);
             _activeMovements[vehicle] = movementEdge;
         }
     }
@@ -140,86 +137,56 @@ public class FreeForAllIntersectionController : IIntersectionController
     {
         if (vehicle != null)
         {
-            _approachRequests.Remove(vehicle);
             _activeMovements.Remove(vehicle);
+            _reservedMovements.Remove(vehicle);
         }
-    }
-
-    private ApproachRequest RegisterApproach(TrafficMovementRequest movementRequest)
-    {
-        VehicleAI vehicle = movementRequest.Vehicle;
-        TrafficEdge movementEdge = movementRequest.MovementEdge;
-        if (!_approachRequests.TryGetValue(vehicle, out ApproachRequest request) ||
-            request == null ||
-            request.movementEdge != movementEdge)
-        {
-            request = new ApproachRequest
-            {
-                movementEdge = movementEdge,
-                movementId = movementRequest.MovementId,
-                vehicleId = movementRequest.VehicleId,
-                sequence = _nextApproachSequence++
-            };
-            _approachRequests[vehicle] = request;
-        }
-
-        request.lastSeenTick = _tickIndex;
-        return request;
     }
 
     private bool IsLeadApproachVehicle(VehicleAI vehicle, TrafficEdge fromEdge)
     {
         return vehicle != null &&
                fromEdge != null &&
-               vehicle.currentEdge == fromEdge &&
-               fromEdge.GetVehicleAhead(vehicle) == null;
+               ConveyorTrafficManager.Instance != null &&
+               ConveyorTrafficManager.Instance.IsLeadVehicleOnEdge(
+                   vehicle,
+                   fromEdge);
     }
 
-    private bool IsInsideApproachDecisionZone(VehicleAI vehicle, TrafficEdge fromEdge)
+    private bool HasMatchingReservation(VehicleAI vehicle, TrafficEdge movementEdge)
+    {
+        return vehicle != null &&
+               movementEdge != null &&
+               _reservedMovements.TryGetValue(
+                   vehicle,
+                   out ReservedMovement reserved) &&
+               reserved != null &&
+               reserved.MovementEdge == movementEdge;
+    }
+
+    private void RefreshReservation(VehicleAI vehicle)
+    {
+        if (vehicle == null) return;
+        if (_reservedMovements.TryGetValue(
+                vehicle,
+                out ReservedMovement reserved) &&
+            reserved != null)
+        {
+            reserved.LastSeenTick = _tickIndex;
+        }
+    }
+
+    private bool IsInsideApproachBuffer(VehicleAI vehicle, TrafficEdge fromEdge)
     {
         if (vehicle == null || fromEdge == null) return false;
 
-        float maximumSpeed = Mathf.Min(
-            vehicle.GetMaximumSpeedUnitsPerSecond(),
-            fromEdge.speedLimit);
-        float deceleration = Mathf.Max(
-            0.1f,
-            vehicle.GetDecelerationUnitsPerSecondSquared());
-        float brakingDistance =
-            maximumSpeed * maximumSpeed /
-            (2f * deceleration);
-        float decisionDistance = Mathf.Max(
-            MinimumApproachDecisionDistance,
-            brakingDistance + ApproachDecisionMargin);
+        float bufferDistance = Mathf.Max(
+            ApproachBufferMinUnits,
+            vehicle.GetVehicleLengthUnits() *
+            ApproachBufferVehicleLengthMultiplier);
         float distanceToEntry = Mathf.Max(
             0f,
             fromEdge.totalLength - vehicle.conveyorDistanceOnEdge);
-        return distanceToEntry <= decisionDistance;
-    }
-
-    private bool HasBlockedVehicleInside()
-    {
-        foreach (TrafficEdge movementEdge in _movementEdges)
-        {
-            if (movementEdge == null || movementEdge.occupants == null) continue;
-
-            foreach (VehicleAI occupant in movementEdge.occupants)
-            {
-                if (occupant == null ||
-                    occupant.currentEdge != movementEdge ||
-                    !occupant.isConveyorMoving)
-                {
-                    continue;
-                }
-
-                if (occupant.trafficWasBlocked)
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
+        return distanceToEntry <= bufferDistance;
     }
 
     private bool PathsConflict(TrafficEdge a, TrafficEdge b)

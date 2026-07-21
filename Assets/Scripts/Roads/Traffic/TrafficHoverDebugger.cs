@@ -149,8 +149,11 @@ public class TrafficHoverDebugger : MonoBehaviour
         string graphInfo = edge.graphVersion.IsValid
             ? $" graph={edge.graphVersion.Value} lane={edge.stableLaneId.Value:X16} segment={edge.stableLaneSegmentId.Value:X16} movement={edge.stableMovementId.Value:X16}"
             : string.Empty;
+        int occupantCount = ConveyorTrafficManager.Instance != null
+            ? ConveyorTrafficManager.Instance.GetOccupantCountOnEdge(edge)
+            : 0;
 
-        Debug.Log($"Traffic edge {edge.edgeId} kind={edge.kind} lane={edge.fromLaneIndex}->{edge.toLaneIndex} dirs={edge.fromDirectionBit}->{edge.toDirectionBit} occupants={edge.occupants.Count}{transitionInfo}{controllerInfo}{graphInfo}");
+        Debug.Log($"Traffic edge {edge.edgeId} kind={edge.kind} lane={edge.fromLaneIndex}->{edge.toLaneIndex} dirs={edge.fromDirectionBit}->{edge.toDirectionBit} occupants={occupantCount}{transitionInfo}{controllerInfo}{graphInfo}");
     }
 
     private void DrawLine(List<Vector3> points, Color color, float width)

@@ -33,6 +33,7 @@ public class ConveyorTrafficManager : MonoBehaviour
     private readonly List<VehicleAI> _activeVehicles = new List<VehicleAI>();
     private readonly HashSet<TrafficEdge> _activeEdges = new HashSet<TrafficEdge>();
     private readonly List<TrafficEdge> _tickEdges = new List<TrafficEdge>();
+    private readonly HashSet<VehicleAI> _vehiclesTickedThisStep = new HashSet<VehicleAI>();
     private readonly List<VehicleAI> _graphRebuildVehicles = new List<VehicleAI>();
     private readonly TrafficRuntimeState _runtimeState = new TrafficRuntimeState();
     private readonly TrafficReservationService _reservationService =
@@ -55,8 +56,10 @@ public class ConveyorTrafficManager : MonoBehaviour
     private const float StopLineLookaheadUnits = 3f;
     private const float RouteFollowingLookaheadUnits = 12f;
     private const float StopLineBodyClearance = 0.03f;
+    private const float IntersectionApproachBufferMinUnits = 0.65f;
+    private const float IntersectionApproachBufferVehicleLengthMultiplier = 3f;
+    private const float IntersectionYieldCreepSpeedUnitsPerSecond = 0.12f;
     private const float IntersectionRearClearance = 0.05f;
-    private const float IntersectionEntrySpeedUnitsPerSecond = 0.4f;
     private const float StopPositionEpsilon = 0.05f;
     private const float DriverReactionDelayMin = 0.25f;
     private const float DriverReactionDelayMax = 0.75f;
@@ -64,6 +67,10 @@ public class ConveyorTrafficManager : MonoBehaviour
     private const float TrafficStuckSpeedThreshold = 0.05f;
     private const float TrafficStuckDistanceEpsilon = 0.01f;
     private const float CongestionSnapshotIntervalSeconds = 0.5f;
+    private const float QueueReactionMovingSpeedThreshold = 0.04f;
+    private const float QueueReactionSpeedIncreaseThreshold = 0.03f;
+    private const float QueueStopComfortDecelerationScale = 0.35f;
+    private const float ConnectorStopComfortDecelerationScale = 0.5f;
 
     private void Awake()
     {
@@ -83,6 +90,8 @@ public class ConveyorTrafficManager : MonoBehaviour
                 _simulationClock.FixedDeltaSeconds,
                 (float)_tickStopwatch.Elapsed.TotalMilliseconds);
         }
+
+        ApplyInterpolatedVehicleTransforms(_simulationClock.InterpolationAlpha);
     }
 
     private void Start()
@@ -131,7 +140,12 @@ public class ConveyorTrafficManager : MonoBehaviour
         TrafficEdge firstEdge = route.ManagedEdges[0];
         float entryDistance = firstEdge != null ? Mathf.Clamp(route.StartDistanceOnFirstEdge, 0f, firstEdge.totalLength) : 0f;
         if (firstEdge == null ||
-            !firstEdge.HasSpaceAtDistance(entryDistance, vehicle.GetVehicleLengthUnits(), vehicle.GetMinimumFollowingGapUnits(), vehicle))
+            !HasEdgeSpaceAtDistance(
+                firstEdge,
+                entryDistance,
+                vehicle.GetVehicleLengthUnits(),
+                vehicle.GetMinimumFollowingGapUnits(),
+                vehicle))
         {
             return false;
         }
@@ -143,6 +157,7 @@ public class ConveyorTrafficManager : MonoBehaviour
         vehicle.conveyorCurrentSpeed = 0f;
         vehicle.conveyorPreviousAccelerationUnitsPerSecondSquared = 0f;
         vehicle.isConveyorMoving = true;
+        ClearFollowingReactionDelay(vehicle);
         ClearTrafficBlock(vehicle);
 
         _runtimeState.Register(vehicle, firstEdge, entryDistance);
@@ -168,7 +183,10 @@ public class ConveyorTrafficManager : MonoBehaviour
             }
 
             _runtimeState.Unregister(vehicle);
-            if (vehicle.currentEdge.occupants.Count == 0) _activeEdges.Remove(vehicle.currentEdge);
+            if (_runtimeState.IsEdgeEmpty(vehicle.currentEdge))
+            {
+                _activeEdges.Remove(vehicle.currentEdge);
+            }
         }
 
         _activeVehicles.Remove(vehicle);
@@ -179,6 +197,8 @@ public class ConveyorTrafficManager : MonoBehaviour
         vehicle.conveyorDistanceOnEdge = 0f;
         vehicle.conveyorCurrentSpeed = 0f;
         vehicle.conveyorPreviousAccelerationUnitsPerSecondSquared = 0f;
+        vehicle.hasConveyorVisualPose = false;
+        ClearFollowingReactionDelay(vehicle);
         ClearTrafficBlock(vehicle);
     }
 
@@ -202,6 +222,7 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         _runtimeState.Clear();
+        _reservationService.Clear();
         _activeVehicles.Clear();
         _activeEdges.Clear();
         _connectorRequests.Clear();
@@ -339,6 +360,8 @@ public class ConveyorTrafficManager : MonoBehaviour
         vehicle.currentEdge = currentEdge;
         vehicle.conveyorDistanceOnEdge = remappedDistance;
         vehicle.isConveyorMoving = true;
+        vehicle.hasConveyorVisualPose = false;
+        ClearFollowingReactionDelay(vehicle);
         ClearTrafficBlock(vehicle);
 
         _runtimeState.Register(vehicle, currentEdge, remappedDistance);
@@ -367,6 +390,8 @@ public class ConveyorTrafficManager : MonoBehaviour
         vehicle.conveyorDistanceOnEdge = 0f;
         vehicle.conveyorCurrentSpeed = 0f;
         vehicle.conveyorPreviousAccelerationUnitsPerSecondSquared = 0f;
+        vehicle.hasConveyorVisualPose = false;
+        ClearFollowingReactionDelay(vehicle);
         ClearTrafficBlock(vehicle);
     }
 
@@ -482,8 +507,8 @@ public class ConveyorTrafficManager : MonoBehaviour
             if (edge == null) continue;
 
             float penalty = 0f;
-            if (edge.occupants != null) penalty += edge.occupants.Count;
-            if (edge.reservations != null) penalty += edge.reservations.Count * 0.5f;
+            penalty += _runtimeState.GetOccupantCount(edge);
+            penalty += _reservationService.GetReservationCount(edge) * 0.5f;
             if (penalty <= 0f) continue;
 
             if (edge.stableLaneSegmentId.IsValid)
@@ -502,12 +527,45 @@ public class ConveyorTrafficManager : MonoBehaviour
             movementPenalties);
     }
 
+    public bool IsLeadVehicleOnEdge(VehicleAI vehicle, TrafficEdge edge)
+    {
+        return vehicle != null &&
+               edge != null &&
+               vehicle.currentEdge == edge &&
+               _runtimeState.GetVehicleAhead(vehicle, edge) == null;
+    }
+
+    public int GetOccupantCountOnEdge(TrafficEdge edge)
+    {
+        return _runtimeState.GetOccupantCount(edge);
+    }
+
+    public bool HasBlockedOccupantOnEdge(TrafficEdge edge)
+    {
+        IReadOnlyList<TrafficOccupantRecord> occupants =
+            _runtimeState.GetOccupants(edge);
+        for (int i = 0; i < occupants.Count; i++)
+        {
+            TrafficOccupantRecord occupant = occupants[i];
+            VehicleAI vehicle = occupant != null ? occupant.Vehicle : null;
+            if (vehicle != null &&
+                vehicle.currentEdge == edge &&
+                vehicle.isConveyorMoving &&
+                vehicle.trafficWasBlocked)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private int CountReservedEdges()
     {
         int count = 0;
         foreach (TrafficEdge edge in _activeEdges)
         {
-            if (edge != null && edge.reservations != null && edge.reservations.Count > 0)
+            if (edge != null && _reservationService.HasReservations(edge))
             {
                 count++;
             }
@@ -519,6 +577,7 @@ public class ConveyorTrafficManager : MonoBehaviour
     private void Tick(float deltaTime)
     {
         if (_activeVehicles.Count == 0) return;
+        _vehiclesTickedThisStep.Clear();
 
         if (TrafficSystemBackend.Instance != null)
         {
@@ -535,24 +594,24 @@ public class ConveyorTrafficManager : MonoBehaviour
 
         foreach (TrafficEdge edge in _tickEdges)
         {
-            edge.occupants.RemoveAll(v => v == null || v.currentEdge != edge || !v.isConveyorMoving);
-            edge.occupants.Sort((a, b) =>
-            {
-                int distanceCompare = b.conveyorDistanceOnEdge.CompareTo(a.conveyorDistanceOnEdge);
-                return distanceCompare != 0
-                    ? distanceCompare
-                    : a.EnsureSimulationId().CompareTo(b.EnsureSimulationId());
-            });
+            _runtimeState.PruneEdge(edge);
 
-            int count = edge.occupants.Count;
-            for (int i = 0; i < count && i < edge.occupants.Count; i++)
+            IReadOnlyList<TrafficOccupantRecord> occupants =
+                _runtimeState.GetOccupants(edge);
+            for (int i = 0; i < occupants.Count; i++)
             {
-                VehicleAI vehicle = edge.occupants[i];
-                if (vehicle != null && vehicle.currentEdge == edge) TickVehicle(vehicle, deltaTime);
+                TrafficOccupantRecord record = occupants[i];
+                VehicleAI vehicle = record != null ? record.Vehicle : null;
+                if (vehicle != null &&
+                    vehicle.currentEdge == edge &&
+                    _vehiclesTickedThisStep.Add(vehicle))
+                {
+                    TickVehicle(vehicle, deltaTime);
+                }
             }
         }
 
-        _activeEdges.RemoveWhere(edge => edge == null || edge.occupants.Count == 0);
+        _activeEdges.RemoveWhere(edge => edge == null || _runtimeState.IsEdgeEmpty(edge));
     }
 
     private void TickVehicle(VehicleAI vehicle, float deltaTime)
@@ -576,6 +635,8 @@ public class ConveyorTrafficManager : MonoBehaviour
         float stopDistanceAlongRoute = float.PositiveInfinity;
         float speedAtStopDistance = 0f;
         bool mustStopAtLimit = false;
+        bool blockedByIntersectionEntry = false;
+        bool blockedByVehicleQueue = false;
 
         if (nextRouteEdge != null)
         {
@@ -599,6 +660,8 @@ public class ConveyorTrafficManager : MonoBehaviour
             mustStopAtLimit = true;
             stopDistanceAlongRoute = followingStopDistance;
             speedAtStopDistance = followingSpeedAtDistance;
+            blockedByVehicleQueue =
+                followingSpeedAtDistance <= QueueReactionMovingSpeedThreshold;
 
             float distanceToCurrentEdgeEnd = Mathf.Max(0f, targetDistanceOnEdge - currentDistance);
             if (followingStopDistance <= distanceToCurrentEdgeEnd)
@@ -610,7 +673,9 @@ public class ConveyorTrafficManager : MonoBehaviour
         if (!IsOnFinalEdge(vehicle))
         {
             float distanceToEdgeEnd = Mathf.Max(0f, targetDistanceOnEdge - currentDistance);
-            float transitionLookahead = GetBrakingApproachDistance(vehicle);
+            float transitionLookahead = GetTransitionApproachDistance(
+                vehicle,
+                nextRouteEdge);
             if (distanceToEdgeEnd <= transitionLookahead &&
                 !CanTransitionToNextEdge(vehicle, 0f, false, false))
             {
@@ -621,6 +686,9 @@ public class ConveyorTrafficManager : MonoBehaviour
                     targetDistanceOnEdge);
                 float distanceToStopLine = Mathf.Max(0f, blockedStopDistance - currentDistance);
                 mustStopAtLimit = true;
+                blockedByIntersectionEntry =
+                    nextRouteEdge != null &&
+                    nextRouteEdge.kind == TrafficEdgeKind.IntersectionMovement;
                 maxDistance = Mathf.Min(maxDistance, blockedStopDistance);
                 if (distanceToStopLine < stopDistanceAlongRoute)
                 {
@@ -640,20 +708,28 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         float desiredSpeed = Mathf.Min(vehicle.GetMaximumSpeedUnitsPerSecond(), edge.speedLimit);
-        if (nextRouteEdge != null &&
-            nextRouteEdge.kind == TrafficEdgeKind.IntersectionMovement)
-        {
-            float decel = Mathf.Max(0.1f, vehicle.GetDecelerationUnitsPerSecondSquared());
-            float distanceToEntry = Mathf.Max(0f, targetDistanceOnEdge - currentDistance);
-            float entrySpeed = Mathf.Min(IntersectionEntrySpeedUnitsPerSecond, desiredSpeed);
-            float approachSpeed = Mathf.Sqrt(
-                entrySpeed * entrySpeed +
-                2f * decel * distanceToEntry);
-            desiredSpeed = Mathf.Min(desiredSpeed, approachSpeed);
-        }
-
         if (mustStopAtLimit)
         {
+            if (blockedByIntersectionEntry)
+            {
+                desiredSpeed = Mathf.Min(
+                    desiredSpeed,
+                    GetIntersectionYieldApproachSpeedLimit(
+                        vehicle,
+                        desiredSpeed,
+                        distanceToLimit));
+            }
+            else if (blockedByVehicleQueue)
+            {
+                desiredSpeed = Mathf.Min(
+                    desiredSpeed,
+                    GetQueueFollowingApproachSpeedLimit(
+                        vehicle,
+                        desiredSpeed,
+                        distanceToLimit,
+                        speedAtStopDistance));
+            }
+
             float decel = Mathf.Max(0.1f, vehicle.GetDecelerationUnitsPerSecondSquared());
             float stoppingSpeed = Mathf.Sqrt(
                 speedAtStopDistance * speedAtStopDistance +
@@ -667,9 +743,10 @@ public class ConveyorTrafficManager : MonoBehaviour
             maxDistance = vehicle.conveyorDistanceOnEdge;
         }
 
+        float previousSpeed = vehicle.conveyorCurrentSpeed;
         LongitudinalControlResult control = LongitudinalController.Step(
             new LongitudinalControlInput(
-                vehicle.conveyorCurrentSpeed,
+                previousSpeed,
                 desiredSpeed,
                 deltaTime,
                 vehicle.conveyorPreviousAccelerationUnitsPerSecondSquared,
@@ -681,8 +758,25 @@ public class ConveyorTrafficManager : MonoBehaviour
         vehicle.conveyorPreviousAccelerationUnitsPerSecondSquared =
             control.AccelerationUnitsPerSecondSquared;
 
-        float nextDistance = Mathf.Min(currentDistance + vehicle.conveyorCurrentSpeed * deltaTime, maxDistance);
+        float unconstrainedNextDistance =
+            currentDistance + vehicle.conveyorCurrentSpeed * deltaTime;
+        float nextDistance = Mathf.Min(unconstrainedNextDistance, maxDistance);
         nextDistance = Mathf.Max(currentDistance, nextDistance);
+        bool clampedByTrafficLimit =
+            nextDistance < unconstrainedNextDistance - 0.0001f &&
+            maxDistance < targetDistanceOnEdge - 0.001f;
+        if (clampedByTrafficLimit)
+        {
+            float actualSpeed = deltaTime > 0.0001f
+                ? (nextDistance - currentDistance) / deltaTime
+                : 0f;
+            vehicle.conveyorCurrentSpeed = Mathf.Max(0f, actualSpeed);
+            vehicle.conveyorPreviousAccelerationUnitsPerSecondSquared =
+                deltaTime > 0.0001f
+                    ? (vehicle.conveyorCurrentSpeed - previousSpeed) /
+                      deltaTime
+                    : 0f;
+        }
 
         bool stoppedInTraffic = mustStopAtLimit &&
                                 vehicle.conveyorCurrentSpeed <= TrafficStuckSpeedThreshold &&
@@ -739,31 +833,38 @@ public class ConveyorTrafficManager : MonoBehaviour
             return false;
         }
 
-        float followingGap =
+        float dynamicFollowingGap =
             vehicle.GetMinimumFollowingGapUnits() +
             vehicle.conveyorCurrentSpeed *
             vehicle.GetDesiredTimeHeadwaySeconds();
         float vehicleHalfLength = vehicle.GetVehicleLengthUnits() * 0.5f;
+        bool hasLimitingVehicleLeader = false;
         VehicleAI sameEdgeVehicle =
             _runtimeState.GetVehicleAhead(vehicle, vehicle.currentEdge);
         if (sameEdgeVehicle != null)
         {
             float centerClearance = vehicleHalfLength +
                                     sameEdgeVehicle.GetVehicleLengthUnits() * 0.5f +
-                                    Mathf.Max(
-                                        followingGap,
-                                        sameEdgeVehicle.GetMinimumFollowingGapUnits());
-            ConsiderFollowingConstraint(
+                                    GetFollowingStopGap(
+                                        vehicle,
+                                        sameEdgeVehicle,
+                                        dynamicFollowingGap);
+            ConsiderVehicleFollowingConstraint(
+                vehicle,
+                sameEdgeVehicle,
                 sameEdgeVehicle.conveyorDistanceOnEdge -
                 vehicle.conveyorDistanceOnEdge -
                 centerClearance,
-                sameEdgeVehicle.conveyorCurrentSpeed,
                 ref stopDistance,
-                ref speedAtStopDistance);
+                ref speedAtStopDistance,
+                ref hasLimitingVehicleLeader);
         }
 
-        foreach (TrafficEdgeReservation reservation in vehicle.currentEdge.reservations)
+        IReadOnlyList<TrafficEdgeReservation> currentReservations =
+            _reservationService.GetReservations(vehicle.currentEdge);
+        for (int i = 0; i < currentReservations.Count; i++)
         {
+            TrafficEdgeReservation reservation = currentReservations[i];
             if (reservation == null ||
                 reservation.vehicle == null ||
                 reservation.vehicle == vehicle ||
@@ -783,10 +884,18 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         float deceleration = Mathf.Max(0.1f, vehicle.GetDecelerationUnitsPerSecondSquared());
-        float brakingDistance = vehicle.conveyorCurrentSpeed * vehicle.conveyorCurrentSpeed / (2f * deceleration);
+        float comfortableQueueDeceleration = Mathf.Max(
+            0.05f,
+            deceleration * QueueStopComfortDecelerationScale);
+        float comfortableQueueBrakingDistance =
+            vehicle.conveyorCurrentSpeed *
+            vehicle.conveyorCurrentSpeed /
+            (2f * comfortableQueueDeceleration);
         float lookaheadDistance = Mathf.Max(
             RouteFollowingLookaheadUnits,
-            brakingDistance + vehicle.GetVehicleLengthUnits() + followingGap);
+            comfortableQueueBrakingDistance +
+            vehicle.GetVehicleLengthUnits() +
+            dynamicFollowingGap);
         float distanceToEdgeStart = Mathf.Max(
             0f,
             vehicle.currentEdge.totalLength - vehicle.conveyorDistanceOnEdge);
@@ -798,48 +907,124 @@ public class ConveyorTrafficManager : MonoBehaviour
             TrafficEdge routeEdge = vehicle.conveyorRoute.ManagedEdges[edgeIndex];
             if (routeEdge == null) break;
 
-            foreach (VehicleAI candidate in routeEdge.occupants)
+            bool shouldConsiderRouteEdgeOccupants =
+                routeEdge.kind != TrafficEdgeKind.IntersectionMovement ||
+                distanceToEdgeStart <= GetIntersectionApproachBufferDistance(vehicle);
+            if (shouldConsiderRouteEdgeOccupants)
             {
-                if (candidate == null || candidate == vehicle) continue;
-
-                float centerClearance = vehicleHalfLength +
-                                        candidate.GetVehicleLengthUnits() * 0.5f +
-                                        Mathf.Max(
-                                            followingGap,
-                                            candidate.GetMinimumFollowingGapUnits());
-                float candidateStopDistance = distanceToEdgeStart +
-                                              candidate.conveyorDistanceOnEdge -
-                                              centerClearance;
-                ConsiderFollowingConstraint(
-                    candidateStopDistance,
-                    candidate.conveyorCurrentSpeed,
-                    ref stopDistance,
-                    ref speedAtStopDistance);
-            }
-
-            foreach (TrafficEdgeReservation reservation in routeEdge.reservations)
-            {
-                if (reservation == null ||
-                    reservation.vehicle == null ||
-                    reservation.vehicle == vehicle)
+                IReadOnlyList<TrafficOccupantRecord> routeOccupants =
+                    _runtimeState.GetOccupants(routeEdge);
+                for (int i = 0; i < routeOccupants.Count; i++)
                 {
-                    continue;
+                    TrafficOccupantRecord occupant = routeOccupants[i];
+                    VehicleAI candidate = occupant != null ? occupant.Vehicle : null;
+                    if (candidate == null || candidate == vehicle) continue;
+
+                    float centerClearance = vehicleHalfLength +
+                                            candidate.GetVehicleLengthUnits() * 0.5f +
+                                            GetFollowingStopGap(
+                                                vehicle,
+                                                candidate,
+                                                dynamicFollowingGap);
+                    float candidateStopDistance = distanceToEdgeStart +
+                                                  candidate.conveyorDistanceOnEdge -
+                                                  centerClearance;
+                    ConsiderVehicleFollowingConstraint(
+                        vehicle,
+                        candidate,
+                        candidateStopDistance,
+                        ref stopDistance,
+                        ref speedAtStopDistance,
+                        ref hasLimitingVehicleLeader);
                 }
 
-                float reservationStopDistance = distanceToEdgeStart +
-                                                reservation.minDistance -
-                                                vehicleHalfLength;
-                ConsiderFollowingConstraint(
-                    reservationStopDistance,
-                    0f,
-                    ref stopDistance,
-                    ref speedAtStopDistance);
+                IReadOnlyList<TrafficEdgeReservation> routeReservations =
+                    _reservationService.GetReservations(routeEdge);
+                for (int i = 0; i < routeReservations.Count; i++)
+                {
+                    TrafficEdgeReservation reservation = routeReservations[i];
+                    if (reservation == null ||
+                        reservation.vehicle == null ||
+                        reservation.vehicle == vehicle)
+                    {
+                        continue;
+                    }
+
+                    float reservationStopDistance = distanceToEdgeStart +
+                                                    reservation.minDistance -
+                                                    vehicleHalfLength;
+                    ConsiderFollowingConstraint(
+                        reservationStopDistance,
+                        0f,
+                        ref stopDistance,
+                        ref speedAtStopDistance);
+                }
             }
 
             distanceToEdgeStart += routeEdge.totalLength;
         }
 
+        if (!hasLimitingVehicleLeader)
+        {
+            ClearFollowingReactionDelay(vehicle);
+        }
+
         return !float.IsPositiveInfinity(stopDistance);
+    }
+
+    private void ConsiderVehicleFollowingConstraint(
+        VehicleAI vehicle,
+        VehicleAI leader,
+        float candidateDistance,
+        ref float stopDistance,
+        ref float speedAtStopDistance,
+        ref bool hasLimitingVehicleLeader)
+    {
+        if (candidateDistance > stopDistance + 0.001f) return;
+
+        float reactedLeaderSpeed = GetReactedLeaderSpeed(
+            vehicle,
+            leader,
+            out bool waitingForLaunchReaction);
+        if (waitingForLaunchReaction &&
+            vehicle.conveyorCurrentSpeed <= QueueReactionMovingSpeedThreshold)
+        {
+            candidateDistance = 0f;
+            reactedLeaderSpeed = 0f;
+        }
+
+        hasLimitingVehicleLeader = true;
+        ConsiderFollowingConstraint(
+            candidateDistance,
+            reactedLeaderSpeed,
+            ref stopDistance,
+            ref speedAtStopDistance);
+    }
+
+    private float GetFollowingStopGap(
+        VehicleAI vehicle,
+        VehicleAI leader,
+        float dynamicFollowingGap)
+    {
+        if (vehicle == null) return Mathf.Max(0f, dynamicFollowingGap);
+
+        float minimumGap = vehicle.GetMinimumFollowingGapUnits();
+        if (leader != null)
+        {
+            minimumGap = Mathf.Max(
+                minimumGap,
+                leader.GetMinimumFollowingGapUnits());
+
+            if (leader.trafficWasBlocked ||
+                leader.conveyorCurrentSpeed <= QueueReactionMovingSpeedThreshold)
+            {
+                return minimumGap;
+            }
+        }
+
+        return Mathf.Max(
+            minimumGap,
+            dynamicFollowingGap);
     }
 
     private void ConsiderFollowingConstraint(
@@ -862,6 +1047,74 @@ public class ConveyorTrafficManager : MonoBehaviour
         speedAtStopDistance = Mathf.Max(0f, candidateSpeed);
     }
 
+    private float GetReactedLeaderSpeed(
+        VehicleAI vehicle,
+        VehicleAI leader,
+        out bool waitingForLaunchReaction)
+    {
+        waitingForLaunchReaction = false;
+        if (vehicle == null || leader == null) return 0f;
+
+        VehicleSimulationId leaderId = leader.EnsureSimulationId();
+        float leaderSpeed = Mathf.Max(0f, leader.conveyorCurrentSpeed);
+        bool changedLeader = vehicle.followingReactionLeaderId != leaderId;
+        if (changedLeader)
+        {
+            vehicle.followingReactionLeaderId = leaderId;
+            vehicle.followingReactionObservedLeaderSpeed = leaderSpeed;
+            vehicle.followingReactionReleaseTime = 0f;
+            return leaderSpeed;
+        }
+
+        float observedSpeed = Mathf.Max(0f, vehicle.followingReactionObservedLeaderSpeed);
+        if (leaderSpeed <= observedSpeed + QueueReactionSpeedIncreaseThreshold ||
+            leaderSpeed <= QueueReactionMovingSpeedThreshold)
+        {
+            vehicle.followingReactionObservedLeaderSpeed = leaderSpeed;
+            vehicle.followingReactionReleaseTime = 0f;
+            return leaderSpeed;
+        }
+
+        if (observedSpeed > QueueReactionMovingSpeedThreshold)
+        {
+            vehicle.followingReactionObservedLeaderSpeed = leaderSpeed;
+            vehicle.followingReactionReleaseTime = 0f;
+            return leaderSpeed;
+        }
+
+        float reactionTime = vehicle.GetDriverReactionTimeSeconds();
+        if (reactionTime <= 0f)
+        {
+            vehicle.followingReactionObservedLeaderSpeed = leaderSpeed;
+            vehicle.followingReactionReleaseTime = 0f;
+            return leaderSpeed;
+        }
+
+        if (vehicle.followingReactionReleaseTime <= 0f)
+        {
+            vehicle.followingReactionReleaseTime = Time.time + reactionTime;
+        }
+
+        if (Time.time < vehicle.followingReactionReleaseTime)
+        {
+            waitingForLaunchReaction = true;
+            return observedSpeed;
+        }
+
+        vehicle.followingReactionObservedLeaderSpeed = leaderSpeed;
+        vehicle.followingReactionReleaseTime = 0f;
+        return leaderSpeed;
+    }
+
+    private void ClearFollowingReactionDelay(VehicleAI vehicle)
+    {
+        if (vehicle == null) return;
+
+        vehicle.followingReactionLeaderId = VehicleSimulationId.Invalid;
+        vehicle.followingReactionReleaseTime = 0f;
+        vehicle.followingReactionObservedLeaderSpeed = 0f;
+    }
+
     private float GetBlockedTransitionStopDistance(
         VehicleAI vehicle,
         TrafficEdge currentEdge,
@@ -869,6 +1122,13 @@ public class ConveyorTrafficManager : MonoBehaviour
         float edgeTargetDistance)
     {
         if (vehicle == null || currentEdge == null) return edgeTargetDistance;
+
+        if (nextEdge != null &&
+            (nextEdge.kind == TrafficEdgeKind.LaneChange ||
+             nextEdge.kind == TrafficEdgeKind.RoadTypeTransition))
+        {
+            return edgeTargetDistance;
+        }
 
         float frontExtent = vehicle.GetVehicleLengthUnits() * 0.5f;
         float boundaryClearance =
@@ -880,6 +1140,58 @@ public class ConveyorTrafficManager : MonoBehaviour
             edgeTargetDistance - frontExtent - boundaryClearance,
             0f,
             edgeTargetDistance);
+    }
+
+    private float GetIntersectionYieldApproachSpeedLimit(
+        VehicleAI vehicle,
+        float desiredSpeed,
+        float distanceToStopLine)
+    {
+        if (vehicle == null) return desiredSpeed;
+
+        float slowdownZone = GetIntersectionApproachBufferDistance(vehicle);
+        if (distanceToStopLine >= slowdownZone)
+        {
+            return desiredSpeed;
+        }
+
+        float t = Mathf.Clamp01(distanceToStopLine / slowdownZone);
+        t = t * t * (3f - 2f * t);
+        return Mathf.Lerp(
+            IntersectionYieldCreepSpeedUnitsPerSecond,
+            desiredSpeed,
+            t);
+    }
+
+    private float GetIntersectionApproachBufferDistance(VehicleAI vehicle)
+    {
+        if (vehicle == null) return IntersectionApproachBufferMinUnits;
+
+        return Mathf.Max(
+            IntersectionApproachBufferMinUnits,
+            vehicle.GetVehicleLengthUnits() *
+            IntersectionApproachBufferVehicleLengthMultiplier);
+    }
+
+    private float GetQueueFollowingApproachSpeedLimit(
+        VehicleAI vehicle,
+        float desiredSpeed,
+        float distanceToQueuePosition,
+        float queueSpeed)
+    {
+        if (vehicle == null) return desiredSpeed;
+
+        float comfortableDeceleration = Mathf.Max(
+            0.05f,
+            vehicle.GetDecelerationUnitsPerSecondSquared() *
+            QueueStopComfortDecelerationScale);
+        float availableDistance = Mathf.Max(
+            0f,
+            distanceToQueuePosition - StopPositionEpsilon);
+        float approachSpeed = Mathf.Sqrt(
+            Mathf.Max(0f, queueSpeed) * Mathf.Max(0f, queueSpeed) +
+            2f * comfortableDeceleration * availableDistance);
+        return Mathf.Min(desiredSpeed, approachSpeed);
     }
 
     private bool TryTransitionToNextEdge(VehicleAI vehicle, float remainderDistance)
@@ -900,7 +1212,7 @@ public class ConveyorTrafficManager : MonoBehaviour
             vehicle,
             next,
             Mathf.Clamp(insertionDistance, 0f, next.totalLength));
-        if (current.occupants.Count == 0) _activeEdges.Remove(current);
+        if (_runtimeState.IsEdgeEmpty(current)) _activeEdges.Remove(current);
 
         bool completedReservedConnector =
             current.kind == TrafficEdgeKind.LaneChange ||
@@ -938,7 +1250,7 @@ public class ConveyorTrafficManager : MonoBehaviour
                 vehicle.conveyorDistanceOnEdge);
         }
 
-        UpdateVehicleTransform(vehicle);
+        UpdateVehicleTransform(vehicle, true);
         return true;
     }
 
@@ -961,7 +1273,12 @@ public class ConveyorTrafficManager : MonoBehaviour
         IIntersectionController enteringController = next != null && next.kind == TrafficEdgeKind.IntersectionMovement ? next.exitController : null;
 
         bool canProceed = next != null &&
-                          next.HasSpaceAtDistance(insertionDistance, vehicle.GetVehicleLengthUnits(), vehicle.GetMinimumFollowingGapUnits(), vehicle) &&
+                          HasEdgeSpaceAtDistance(
+                              next,
+                              insertionDistance,
+                              vehicle.GetVehicleLengthUnits(),
+                              vehicle.GetMinimumFollowingGapUnits(),
+                              vehicle) &&
                           HasConnectorClearance(vehicle, next, updateBlockState) &&
                           (enteringController == null ||
                            enteringController.CanEnter(
@@ -979,7 +1296,8 @@ public class ConveyorTrafficManager : MonoBehaviour
 
         bool shouldApplyReactionDelay =
             applyReactionDelay &&
-            enteringController != null;
+            enteringController != null &&
+            enteringController.RuleType != IntersectionRuleType.FreeForAll;
         if (shouldApplyReactionDelay &&
             !DriverReactionReady(vehicle))
         {
@@ -1007,7 +1325,9 @@ public class ConveyorTrafficManager : MonoBehaviour
             return;
         }
 
-        float acquisitionDistance = GetBrakingApproachDistance(vehicle);
+        float acquisitionDistance = GetTransitionApproachDistance(
+            vehicle,
+            connector);
 
         if (distanceToConnector <= acquisitionDistance)
         {
@@ -1033,6 +1353,33 @@ public class ConveyorTrafficManager : MonoBehaviour
             vehicle.GetMinimumFollowingGapUnits());
     }
 
+    private float GetTransitionApproachDistance(
+        VehicleAI vehicle,
+        TrafficEdge nextEdge)
+    {
+        if (vehicle == null) return StopLineLookaheadUnits;
+        if (nextEdge == null ||
+            (nextEdge.kind != TrafficEdgeKind.LaneChange &&
+             nextEdge.kind != TrafficEdgeKind.RoadTypeTransition))
+        {
+            return GetBrakingApproachDistance(vehicle);
+        }
+
+        float deceleration = Mathf.Max(
+            0.05f,
+            vehicle.GetDecelerationUnitsPerSecondSquared() *
+            ConnectorStopComfortDecelerationScale);
+        float brakingDistance =
+            vehicle.conveyorCurrentSpeed *
+            vehicle.conveyorCurrentSpeed /
+            (2f * deceleration);
+        return Mathf.Max(
+            StopLineLookaheadUnits,
+            brakingDistance +
+            vehicle.GetVehicleLengthUnits() +
+            vehicle.GetMinimumFollowingGapUnits());
+    }
+
     private bool HasConnectorClearance(
         VehicleAI vehicle,
         TrafficEdge connector,
@@ -1046,7 +1393,7 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         if (connector.conflictingLaneChangeEdge != null &&
-            connector.conflictingLaneChangeEdge.occupants.Count > 0)
+            _runtimeState.GetOccupantCount(connector.conflictingLaneChangeEdge) > 0)
         {
             RecordReservationContention(commitReservation);
             return false;
@@ -1125,11 +1472,12 @@ public class ConveyorTrafficManager : MonoBehaviour
             }
         }
 
-        if (!targetEdge.CanReserveInterval(
-            minDistance,
-            maxDistance,
-            vehicle,
-            vehicle.GetMinimumFollowingGapUnits()))
+        if (!CanReserveEdgeInterval(
+                targetEdge,
+                minDistance,
+                maxDistance,
+                vehicle,
+                vehicle.GetMinimumFollowingGapUnits()))
         {
             RecordReservationContention(commitReservation);
             return false;
@@ -1283,13 +1631,10 @@ public class ConveyorTrafficManager : MonoBehaviour
     {
         if (vehicle == null || targetEdge == null) return 0f;
 
-        float maximumSpeed = Mathf.Min(
-            vehicle.GetMaximumSpeedUnitsPerSecond(),
-            targetEdge.speedLimit);
-        float deceleration = Mathf.Max(
-            0.1f,
-            vehicle.GetDecelerationUnitsPerSecondSquared());
-        return maximumSpeed * maximumSpeed / (2f * deceleration);
+        return Mathf.Min(
+            targetEdge.totalLength,
+            vehicle.GetVehicleLengthUnits() +
+            vehicle.GetMinimumFollowingGapUnits());
     }
 
     private void BeginConnectorReservationRelease(
@@ -1432,6 +1777,142 @@ public class ConveyorTrafficManager : MonoBehaviour
         return aMax > bMin && bMax > aMin;
     }
 
+    private bool HasEdgeSpaceAtDistance(
+        TrafficEdge edge,
+        float distance,
+        float vehicleLengthUnits,
+        float gapUnits,
+        VehicleAI ignoredVehicle)
+    {
+        if (edge == null) return false;
+
+        float clampedDistance = Mathf.Clamp(distance, 0f, edge.totalLength);
+        float candidateHalfLength = Mathf.Max(0f, vehicleLengthUnits) * 0.5f;
+        float candidateMin = clampedDistance - candidateHalfLength;
+        float candidateMax = clampedDistance + candidateHalfLength;
+
+        IReadOnlyList<TrafficOccupantRecord> occupants =
+            _runtimeState.GetOccupants(edge);
+        for (int i = 0; i < occupants.Count; i++)
+        {
+            TrafficOccupantRecord occupant = occupants[i];
+            VehicleAI occupantVehicle =
+                occupant != null ? occupant.Vehicle : null;
+            if (occupantVehicle == null || occupantVehicle == ignoredVehicle)
+            {
+                continue;
+            }
+
+            float occupantHalfLength =
+                occupantVehicle.GetVehicleLengthUnits() * 0.5f;
+            float safeGap = Mathf.Max(
+                Mathf.Max(0f, gapUnits),
+                occupantVehicle.GetMinimumFollowingGapUnits());
+            float occupantDistance = occupant.DistanceUnits;
+            float occupantMin = occupantDistance - occupantHalfLength - safeGap;
+            float occupantMax = occupantDistance + occupantHalfLength + safeGap;
+            if (IntervalsOverlap(
+                    candidateMin,
+                    candidateMax,
+                    occupantMin,
+                    occupantMax))
+            {
+                return false;
+            }
+        }
+
+        IReadOnlyList<TrafficEdgeReservation> reservations =
+            _reservationService.GetReservations(edge);
+        for (int i = 0; i < reservations.Count; i++)
+        {
+            TrafficEdgeReservation reservation = reservations[i];
+            if (reservation == null ||
+                reservation.vehicle == null ||
+                reservation.vehicle == ignoredVehicle)
+            {
+                continue;
+            }
+
+            if (IntervalsOverlap(
+                    candidateMin,
+                    candidateMax,
+                    reservation.minDistance,
+                    reservation.maxDistance))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private bool CanReserveEdgeInterval(
+        TrafficEdge edge,
+        float minDistance,
+        float maxDistance,
+        VehicleAI vehicle,
+        float reservationGapUnits)
+    {
+        if (edge == null) return false;
+
+        float intervalMin = Mathf.Min(minDistance, maxDistance);
+        float intervalMax = Mathf.Max(minDistance, maxDistance);
+
+        IReadOnlyList<TrafficOccupantRecord> occupants =
+            _runtimeState.GetOccupants(edge);
+        for (int i = 0; i < occupants.Count; i++)
+        {
+            TrafficOccupantRecord occupant = occupants[i];
+            VehicleAI occupantVehicle =
+                occupant != null ? occupant.Vehicle : null;
+            if (occupantVehicle == null || occupantVehicle == vehicle)
+            {
+                continue;
+            }
+
+            float halfLength = occupantVehicle.GetVehicleLengthUnits() * 0.5f;
+            float additionalGap = Mathf.Max(
+                0f,
+                occupantVehicle.GetMinimumFollowingGapUnits() -
+                Mathf.Max(0f, reservationGapUnits));
+            float occupantDistance = occupant.DistanceUnits;
+            float occupantMin = occupantDistance - halfLength - additionalGap;
+            float occupantMax = occupantDistance + halfLength + additionalGap;
+            if (IntervalsOverlap(
+                    intervalMin,
+                    intervalMax,
+                    occupantMin,
+                    occupantMax))
+            {
+                return false;
+            }
+        }
+
+        IReadOnlyList<TrafficEdgeReservation> reservations =
+            _reservationService.GetReservations(edge);
+        for (int i = 0; i < reservations.Count; i++)
+        {
+            TrafficEdgeReservation reservation = reservations[i];
+            if (reservation == null ||
+                reservation.vehicle == null ||
+                reservation.vehicle == vehicle)
+            {
+                continue;
+            }
+
+            if (IntervalsOverlap(
+                    intervalMin,
+                    intervalMax,
+                    reservation.minDistance,
+                    reservation.maxDistance))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private bool IsOnFinalEdge(VehicleAI vehicle)
     {
         return vehicle.conveyorRoute == null ||
@@ -1489,19 +1970,76 @@ public class ConveyorTrafficManager : MonoBehaviour
         vehicle.NotifyConveyorDestinationReached();
     }
 
-    private void UpdateVehicleTransform(VehicleAI vehicle)
+    private void UpdateVehicleTransform(VehicleAI vehicle, bool bridgeFromRenderedPose = false)
     {
         TrafficEdge edge = vehicle.currentEdge;
         if (edge == null) return;
 
         Vector3 position = edge.GetPositionAtDistance(vehicle.conveyorDistanceOnEdge);
         Vector3 direction = GetVehicleVisualDirection(vehicle, edge);
+        Vector3 targetPosition = position + (Vector3.up * VehicleRoadClearance);
+        Quaternion targetRotation = vehicle.transform.rotation;
 
-        vehicle.transform.position = position + (Vector3.up * VehicleRoadClearance);
         if (direction.sqrMagnitude > 0.001f)
         {
-            vehicle.transform.rotation = Quaternion.LookRotation(direction);
+            targetRotation = Quaternion.LookRotation(direction);
         }
+
+        if (!vehicle.hasConveyorVisualPose)
+        {
+            vehicle.conveyorPreviousVisualPosition = targetPosition;
+            vehicle.conveyorCurrentVisualPosition = targetPosition;
+            vehicle.conveyorPreviousVisualRotation = targetRotation;
+            vehicle.conveyorCurrentVisualRotation = targetRotation;
+            vehicle.hasConveyorVisualPose = true;
+        }
+        else if (bridgeFromRenderedPose)
+        {
+            vehicle.conveyorPreviousVisualPosition = vehicle.transform.position;
+            vehicle.conveyorCurrentVisualPosition = targetPosition;
+            vehicle.conveyorPreviousVisualRotation = vehicle.transform.rotation;
+            vehicle.conveyorCurrentVisualRotation = targetRotation;
+        }
+        else
+        {
+            vehicle.conveyorPreviousVisualPosition = vehicle.conveyorCurrentVisualPosition;
+            vehicle.conveyorCurrentVisualPosition = targetPosition;
+            vehicle.conveyorPreviousVisualRotation = vehicle.conveyorCurrentVisualRotation;
+            vehicle.conveyorCurrentVisualRotation = targetRotation;
+        }
+
+        ApplyInterpolatedVehicleTransform(vehicle, _simulationClock.InterpolationAlpha);
+    }
+
+    private void ApplyInterpolatedVehicleTransforms(float alpha)
+    {
+        if (_activeVehicles.Count == 0) return;
+
+        for (int i = 0; i < _activeVehicles.Count; i++)
+        {
+            ApplyInterpolatedVehicleTransform(_activeVehicles[i], alpha);
+        }
+    }
+
+    private void ApplyInterpolatedVehicleTransform(VehicleAI vehicle, float alpha)
+    {
+        if (vehicle == null ||
+            !vehicle.isConveyorMoving ||
+            !vehicle.hasConveyorVisualPose ||
+            !vehicle.gameObject.activeInHierarchy)
+        {
+            return;
+        }
+
+        float t = Mathf.Clamp01(alpha);
+        vehicle.transform.position = Vector3.Lerp(
+            vehicle.conveyorPreviousVisualPosition,
+            vehicle.conveyorCurrentVisualPosition,
+            t);
+        vehicle.transform.rotation = Quaternion.Slerp(
+            vehicle.conveyorPreviousVisualRotation,
+            vehicle.conveyorCurrentVisualRotation,
+            t);
     }
 
     private Vector3 GetVehicleVisualDirection(VehicleAI vehicle, TrafficEdge edge)

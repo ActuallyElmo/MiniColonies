@@ -137,21 +137,10 @@ public class FIFOIntersectionController : IIntersectionController
     {
         foreach (TrafficEdge movementEdge in _movementEdges)
         {
-            if (movementEdge == null || movementEdge.occupants == null) continue;
-
-            foreach (VehicleAI occupant in movementEdge.occupants)
+            if (ConveyorTrafficManager.Instance != null &&
+                ConveyorTrafficManager.Instance.HasBlockedOccupantOnEdge(movementEdge))
             {
-                if (occupant == null ||
-                    occupant.currentEdge != movementEdge ||
-                    !occupant.isConveyorMoving)
-                {
-                    continue;
-                }
-
-                if (occupant.trafficWasBlocked)
-                {
-                    return true;
-                }
+                return true;
             }
         }
 
@@ -162,8 +151,10 @@ public class FIFOIntersectionController : IIntersectionController
     {
         return vehicle != null &&
                fromEdge != null &&
-               vehicle.currentEdge == fromEdge &&
-               fromEdge.GetVehicleAhead(vehicle) == null;
+               ConveyorTrafficManager.Instance != null &&
+               ConveyorTrafficManager.Instance.IsLeadVehicleOnEdge(
+                   vehicle,
+                   fromEdge);
     }
 
     private bool IsInsideApproachDecisionZone(VehicleAI vehicle, TrafficEdge fromEdge)

@@ -29,6 +29,8 @@ public abstract class VehicleData : ScriptableObject
     public float emergencyDecelerationUnitsPerSecondSquared = 30f;
     [Tooltip("Extra following time added on top of minimumFollowingGapUnits while moving. Lower values keep tiny vehicles closer together.")]
     public float desiredTimeHeadwaySeconds = 0.15f;
+    [Tooltip("Delay before a queued vehicle reacts to the vehicle ahead accelerating from a stop.")]
+    public float driverReactionTimeSeconds = 0.25f;
     public float maximumJerkUnitsPerSecondCubed = 30f;
 
     public bool TryCompileTrafficProfile(

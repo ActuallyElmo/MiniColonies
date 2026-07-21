@@ -24,11 +24,20 @@ public class VehicleAI : MonoBehaviour
     [HideInInspector] public VehicleSimulationId simulationId;
     [HideInInspector] public float conveyorPreviousAccelerationUnitsPerSecondSquared;
     [HideInInspector] public TacticalLaneDecision lastTacticalLaneDecision;
+    [HideInInspector] public VehicleSimulationId followingReactionLeaderId;
+    [HideInInspector] public float followingReactionReleaseTime;
+    [HideInInspector] public float followingReactionObservedLeaderSpeed;
+    [HideInInspector] public Vector3 conveyorPreviousVisualPosition;
+    [HideInInspector] public Vector3 conveyorCurrentVisualPosition;
+    [HideInInspector] public Quaternion conveyorPreviousVisualRotation = Quaternion.identity;
+    [HideInInspector] public Quaternion conveyorCurrentVisualRotation = Quaternion.identity;
+    [HideInInspector] public bool hasConveyorVisualPose;
 
     private const float DefaultAcceleration = 12f;
     private const float DefaultDeceleration = 15f;
     private const float DefaultEmergencyDeceleration = 30f;
     private const float DefaultMaximumJerk = 30f;
+    private const float DefaultDriverReactionTime = 0.25f;
     private const float VehicleRoadClearance = 0.03f;
     private static ulong _nextSimulationSequence = 1UL;
 
@@ -167,6 +176,7 @@ public class VehicleAI : MonoBehaviour
         _pendingTargetBuilding = null;
         _pendingNetwork = null;
         _hasPendingAssignment = false;
+        hasConveyorVisualPose = false;
 
         StopAllCoroutines();
         gameObject.SetActive(false); 
@@ -387,6 +397,11 @@ public class VehicleAI : MonoBehaviour
     public float GetDesiredTimeHeadwaySeconds()
     {
         return vehicleData != null ? Mathf.Max(0f, vehicleData.desiredTimeHeadwaySeconds) : 1.5f;
+    }
+
+    public float GetDriverReactionTimeSeconds()
+    {
+        return vehicleData != null ? Mathf.Max(0f, vehicleData.driverReactionTimeSeconds) : DefaultDriverReactionTime;
     }
 
     public float GetAccelerationUnitsPerSecondSquared()

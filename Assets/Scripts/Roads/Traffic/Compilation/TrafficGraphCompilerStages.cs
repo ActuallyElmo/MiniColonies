@@ -128,6 +128,12 @@ internal static class TrafficGraphCompilerStages
     private const float NodePullback = 0.35f;
     private const int MovementCurveSamples = 12;
     private const int LaneCenterlineSmoothingIterations = 3;
+    private const float LaneChangeLengthUnits = 0.8f;
+    private const float MinimumLaneChangeLengthUnits = 0.45f;
+    private const float LaneChangeEndpointMarginUnits = 0.25f;
+    private const float LaneChangeEndpointWindowSpacingUnits = 0.35f;
+    private const float LaneChangeIntersectionEntryClearanceUnits = 3.5f;
+    private const float MinimumLaneChangeEndpointMarginUnits = 0.1f;
 
     public static void Normalize(TrafficGraphCompilationContext context)
     {
@@ -1314,29 +1320,96 @@ internal static class TrafficGraphCompilerStages
                 if (lanes.Count < 2) continue;
                 lanes.Sort(CompareLaneOrdinal);
                 float usableLength = CalculatePolylineLength(lanes[0].Samples);
-                if (usableLength < 0.6f) continue;
+                List<Vector2> windows =
+                    BuildSectionLaneChangeWindows(usableLength);
+                if (windows.Count == 0) continue;
 
-                float sourceDistance = usableLength * 0.3f;
-                float targetDistance = usableLength * 0.7f;
-                for (int laneIndex = 0; laneIndex < lanes.Count - 1; laneIndex++)
+                for (int windowIndex = 0;
+                     windowIndex < windows.Count;
+                     windowIndex++)
                 {
-                    AddLaneChangeMovement(
-                        context,
-                        section,
-                        lanes[laneIndex],
-                        lanes[laneIndex + 1],
-                        sourceDistance,
-                        targetDistance);
-                    AddLaneChangeMovement(
-                        context,
-                        section,
-                        lanes[laneIndex + 1],
-                        lanes[laneIndex],
-                        sourceDistance,
-                        targetDistance);
+                    Vector2 window = windows[windowIndex];
+                    for (int laneIndex = 0;
+                         laneIndex < lanes.Count - 1;
+                         laneIndex++)
+                    {
+                        AddLaneChangeMovement(
+                            context,
+                            section,
+                            lanes[laneIndex],
+                            lanes[laneIndex + 1],
+                            window.x,
+                            window.y);
+                        AddLaneChangeMovement(
+                            context,
+                            section,
+                            lanes[laneIndex + 1],
+                            lanes[laneIndex],
+                            window.x,
+                            window.y);
+                    }
                 }
             }
         }
+    }
+
+    private static List<Vector2> BuildSectionLaneChangeWindows(
+        float sectionLength)
+    {
+        var windows = new List<Vector2>();
+        if (sectionLength <= 0f) return windows;
+
+        float endpointMargin = Mathf.Min(
+            LaneChangeEndpointMarginUnits,
+            Mathf.Max(
+                MinimumLaneChangeEndpointMarginUnits,
+                sectionLength * 0.15f));
+        float availableLength = sectionLength - endpointMargin * 2f;
+        if (availableLength < MinimumLaneChangeLengthUnits)
+        {
+            return windows;
+        }
+
+        float laneChangeLength = Mathf.Min(
+            LaneChangeLengthUnits,
+            availableLength);
+        float availableEnd = sectionLength - endpointMargin;
+
+        AddSectionLaneChangeWindow(
+            windows,
+            endpointMargin,
+            endpointMargin + laneChangeLength);
+
+        float approachWindowEnd = Mathf.Max(
+            endpointMargin + laneChangeLength,
+            availableEnd - LaneChangeIntersectionEntryClearanceUnits);
+        float beforeIntersectionStart = approachWindowEnd - laneChangeLength;
+        if (beforeIntersectionStart >=
+            endpointMargin +
+            laneChangeLength +
+            LaneChangeEndpointWindowSpacingUnits)
+        {
+            AddSectionLaneChangeWindow(
+                windows,
+                beforeIntersectionStart,
+                approachWindowEnd);
+        }
+
+        return windows;
+    }
+
+    private static void AddSectionLaneChangeWindow(
+        List<Vector2> windows,
+        float sourceDistance,
+        float targetDistance)
+    {
+        if (windows == null) return;
+        if (targetDistance - sourceDistance < MinimumLaneChangeLengthUnits)
+        {
+            return;
+        }
+
+        windows.Add(new Vector2(sourceDistance, targetDistance));
     }
 
     private static void AddLaneChangeMovement(
@@ -1379,7 +1452,7 @@ internal static class TrafficGraphCompilerStages
         }
 
         string key =
-            $"LANE_CHANGE:{source.Id.Value:X16}->{target.Id.Value:X16}/SECTION:{section.Id.Value:X16}";
+            $"LANE_CHANGE:{source.Id.Value:X16}->{target.Id.Value:X16}/SECTION:{section.Id.Value:X16}/RANGE:{sourceDistance:0.###}-{targetDistance:0.###}";
         MovementId id = MovementId.FromStableKey(key);
         var movement = new MovementDraft
         {

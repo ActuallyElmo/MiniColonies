@@ -127,11 +127,64 @@ public sealed class TrafficRuntimeState
         return null;
     }
 
+    public VehicleAI GetVehicleBehind(VehicleAI vehicle, TrafficEdge edge)
+    {
+        if (vehicle == null || edge == null ||
+            !_occupantsByEdge.TryGetValue(edge, out List<TrafficOccupantRecord> list))
+        {
+            return null;
+        }
+
+        float distance = vehicle.conveyorDistanceOnEdge;
+        for (int i = 0; i < list.Count; i++)
+        {
+            TrafficOccupantRecord candidate = list[i];
+            if (candidate.Vehicle == null || candidate.Vehicle == vehicle) continue;
+            if (candidate.DistanceUnits < distance) return candidate.Vehicle;
+        }
+
+        return null;
+    }
+
     public IReadOnlyList<TrafficOccupantRecord> GetOccupants(TrafficEdge edge)
     {
         return edge != null && _occupantsByEdge.TryGetValue(edge, out List<TrafficOccupantRecord> list)
             ? list
             : System.Array.Empty<TrafficOccupantRecord>();
+    }
+
+    public int GetOccupantCount(TrafficEdge edge)
+    {
+        return edge != null && _occupantsByEdge.TryGetValue(edge, out List<TrafficOccupantRecord> list)
+            ? list.Count
+            : 0;
+    }
+
+    public bool IsEdgeEmpty(TrafficEdge edge) => GetOccupantCount(edge) == 0;
+
+    public void PruneEdge(TrafficEdge edge)
+    {
+        if (edge == null ||
+            !_occupantsByEdge.TryGetValue(edge, out List<TrafficOccupantRecord> list))
+        {
+            return;
+        }
+
+        list.RemoveAll(record =>
+            record == null ||
+            record.Vehicle == null ||
+            record.Vehicle.currentEdge != edge ||
+            !record.Vehicle.isConveyorMoving);
+        if (list.Count == 0)
+        {
+            _occupantsByEdge.Remove(edge);
+        }
+        else
+        {
+            SortEdge(edge);
+        }
+
+        SyncEdgeMirror(edge);
     }
 
     public void Clear()

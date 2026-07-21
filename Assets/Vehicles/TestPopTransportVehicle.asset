@@ -12,6 +12,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 06809eca0e2a9a74f873c2591bea61ea, type: 3}
   m_Name: TestPopTransportVehicle
   m_EditorClassIdentifier: 
+  trafficProfileKey: 
+  trafficCapabilities: 1
+  trafficRoadPermissions: 1
   vehicleName: 
   vehiclePrefab: {fileID: 8014586108714606, guid: 4ac341fda79d7194398715671f9147d3, type: 3}
   maximumVehicleSpeed: 1
@@ -21,8 +24,9 @@ MonoBehaviour:
   minimumFollowingGapUnits: 0.1
   accelerationUnitsPerSecondSquared: 0.7
   decelerationUnitsPerSecondSquared: 0.5
-  emergencyDecelerationUnitsPerSecondSquared: 1
-  desiredTimeHeadwaySeconds: 0.12
-  maximumJerkUnitsPerSecondCubed: 30
+  emergencyDecelerationUnitsPerSecondSquared: 0.5
+  desiredTimeHeadwaySeconds: 0.01
+  driverReactionTimeSeconds: 0.25
+  maximumJerkUnitsPerSecondCubed: 10
   vehicleSpaceUsed: 0
   amountOfPopsTransported: 0

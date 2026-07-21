@@ -19,26 +19,22 @@ public class TrafficSystemBackend : MonoBehaviour
     public IReadOnlyList<TrafficDiagnostic> LastCompilerDiagnostics =>
         _lastCompilerDiagnostics.Items;
 
-    private Dictionary<Vector2Int, List<LaneEndpoint>> _intersectionIncoming = new Dictionary<Vector2Int, List<LaneEndpoint>>();
-    private Dictionary<Vector2Int, List<LaneEndpoint>> _intersectionOutgoing = new Dictionary<Vector2Int, List<LaneEndpoint>>();
-    private Dictionary<Vector2Int, IIntersectionController> _intersectionControllers = new Dictionary<Vector2Int, IIntersectionController>();
+    private Dictionary<Vector2Int, List<LaneEndpoint>> _intersectionIncoming =
+        new Dictionary<Vector2Int, List<LaneEndpoint>>();
+    private Dictionary<Vector2Int, List<LaneEndpoint>> _intersectionOutgoing =
+        new Dictionary<Vector2Int, List<LaneEndpoint>>();
+    private Dictionary<Vector2Int, IIntersectionController> _intersectionControllers =
+        new Dictionary<Vector2Int, IIntersectionController>();
     private readonly TrafficSpatialIndex _spatialIndex = new TrafficSpatialIndex();
     private readonly Dictionary<LaneSegmentId, TrafficEdge> _edgeByLaneSegmentId =
         new Dictionary<LaneSegmentId, TrafficEdge>();
     private readonly Dictionary<MovementId, TrafficEdge> _edgeByMovementId =
         new Dictionary<MovementId, TrafficEdge>();
-    private TrafficDiagnosticCollection _lastSnapshotDiagnostics = new TrafficDiagnosticCollection();
+    private TrafficDiagnosticCollection _lastSnapshotDiagnostics =
+        new TrafficDiagnosticCollection();
     private TrafficDiagnosticCollection _lastCompilerDiagnostics =
         new TrafficDiagnosticCollection();
     private int _lastReservedGraphVersion;
-
-    [Header("Intersection Geometry")]
-    [Range(0.1f, 0.9f)] public float intersectionNodesPullback = 0.45f;
-    [Range(0.1f, 0.9f)] public float maxIntersectionNodesPullback = 0.82f;
-    [Min(0f)] public float intersectionBoundaryPadding = 0.03f;
-
-    [Header("Snapshot Compatibility")]
-    public bool compareSnapshotCompatibilityAdapter;
 
     [Header("Debug Visualization")]
     public bool showWaypoints = true;
@@ -82,133 +78,16 @@ public class TrafficSystemBackend : MonoBehaviour
             return;
         }
 
-        List<RoadSegmentPayload> segmentsToProcess = ExtractRoadSegments(roadSnapshot);
-
-        int smoothingIterations = 3;
-        RoadVisualSystem rvs = FindFirstObjectByType<RoadVisualSystem>();
-        if (rvs != null) smoothingIterations = rvs.smoothingIterations;
-
         TrafficGenerationTask task = new TrafficGenerationTask(
-            segmentsToProcess,
             roadSnapshot,
-            ReserveNextGraphVersion(),
-            smoothingIterations);
+            ReserveNextGraphVersion());
         SimulationTaskManager.Instance.EnqueueTask(task);
-    }
-
-    private List<RoadSegmentPayload> ExtractRoadSegments(RoadNetworkSnapshot roadSnapshot)
-    {
-        List<RoadSegmentPayload> payloads = new List<RoadSegmentPayload>();
-        HashSet<string> processedSegments = new HashSet<string>();
-        HashSet<Vector2Int> visitedLoopCells = new HashSet<Vector2Int>();
-
-        foreach (RoadCellRecord cellData in roadSnapshot.Cells)
-        {
-            Vector2Int currentCell = cellData.GridPosition;
-
-            if (IsRealNode(cellData))
-            {
-                for (int i = 0; i < 8; i++)
-                {
-                    int bit = 1 << i;
-                    if (cellData.HasPhysicalConnection(bit) && cellData.CanExit(bit))
-                    {
-                        Vector2Int neighborCell =
-                            RoadGridDirectionUtility.GetNeighborPosition(currentCell, bit);
-                        RoadProfile trueRoadProfile = GetTrueSegmentRoadProfile(
-                            roadSnapshot,
-                            currentCell,
-                            neighborCell,
-                            cellData);
-                        if (trueRoadProfile == null) continue;
-
-                        List<Vector3> fullPath = TraceTrafficPath(
-                            roadSnapshot,
-                            currentCell,
-                            neighborCell,
-                            out Vector2Int endCell);
-                        string segmentHash =
-                            trueRoadProfile.Directionality == RoadFlowDirectionality.TwoWay
-                                ? GetTwoWayHash(currentCell, endCell)
-                                : $"{currentCell}->{endCell}";
-
-                        if (!processedSegments.Contains(segmentHash))
-                        {
-                            processedSegments.Add(segmentHash);
-                            payloads.Add(new RoadSegmentPayload
-                            {
-                                centerline = fullPath,
-                                roadProfile = trueRoadProfile,
-                                startCell = currentCell,
-                                endCell = endCell
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        foreach (RoadCellRecord cellData in roadSnapshot.Cells)
-        {
-            Vector2Int currentCell = cellData.GridPosition;
-
-            if (!IsRealNode(cellData) && !visitedLoopCells.Contains(currentCell))
-            {
-                for (int i = 0; i < 8; i++)
-                {
-                    int bit = 1 << i;
-                    if (cellData.HasPhysicalConnection(bit) && cellData.CanExit(bit))
-                    {
-                        Vector2Int neighborCell =
-                            RoadGridDirectionUtility.GetNeighborPosition(currentCell, bit);
-                        List<Vector2Int> cellsInLoop = new List<Vector2Int>();
-                        List<Vector3> fullPath = TraceTrafficPathWithCells(
-                            roadSnapshot,
-                            currentCell,
-                            neighborCell,
-                            out Vector2Int endCell,
-                            cellsInLoop);
-                        foreach (Vector2Int loopCell in cellsInLoop) visitedLoopCells.Add(loopCell);
-
-                        if (!roadSnapshot.TryGetRoadProfile(
-                                cellData.RoadProfileId,
-                                out RoadProfile roadProfile))
-                        {
-                            continue;
-                        }
-
-                        string segmentHash =
-                            roadProfile.Directionality == RoadFlowDirectionality.TwoWay
-                                ? GetTwoWayHash(currentCell, endCell)
-                                : $"{currentCell}->{endCell}";
-
-                        if (!processedSegments.Contains(segmentHash))
-                        {
-                            processedSegments.Add(segmentHash);
-                            payloads.Add(new RoadSegmentPayload
-                            {
-                                centerline = fullPath,
-                                roadProfile = roadProfile,
-                                startCell = currentCell,
-                                endCell = endCell
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        return payloads;
     }
 
     public bool TryApplyNewNetwork(
         RoadNetworkSnapshot sourceSnapshot,
         TrafficGraphSnapshot compiledGraph,
-        TrafficDiagnosticCollection compilerDiagnostics,
-        List<TrafficNode> newNodes,
-        List<TrafficEdge> newEdges,
-        Dictionary<Vector2Int, List<LaneEndpoint>> newIncoming,
-        Dictionary<Vector2Int, List<LaneEndpoint>> newOutgoing)
+        TrafficDiagnosticCollection compilerDiagnostics)
     {
         if (sourceSnapshot == null ||
             !sourceSnapshot.MatchesCurrentSources(
@@ -235,24 +114,13 @@ public class TrafficSystemBackend : MonoBehaviour
              compiledGraph.Version > CurrentTrafficGraphSnapshot.Version);
 
         ManagedTrafficGraphAdapterResult adapterResult = null;
-        if (compiledGraphCanPublish)
-        {
-            bool adapterBuilt = ManagedTrafficGraphAdapter.TryBuild(
+        if (compiledGraphCanPublish &&
+            !ManagedTrafficGraphAdapter.TryBuild(
                 compiledGraph,
                 _lastCompilerDiagnostics,
-                out adapterResult);
-            if (!adapterBuilt)
-            {
-                compiledGraphCanPublish = false;
-            }
-            else if (compareSnapshotCompatibilityAdapter)
-            {
-                ManagedTrafficGraphAdapter.Compare(
-                    adapterResult,
-                    newNodes,
-                    newEdges,
-                    _lastCompilerDiagnostics);
-            }
+                out adapterResult))
+        {
+            compiledGraphCanPublish = false;
         }
 
         if (!compiledGraphCanPublish)
@@ -261,7 +129,7 @@ public class TrafficSystemBackend : MonoBehaviour
             {
                 _lastCompilerDiagnostics.AddError(
                     TrafficDiagnosticCode.CompilerStageFailed,
-                    "Traffic generation produced no immutable graph; refusing to publish the legacy managed graph.",
+                    "Traffic graph compilation produced no immutable graph.",
                     TrafficDiagnosticSource.None);
             }
             else if (!_lastCompilerDiagnostics.HasErrors)
@@ -282,27 +150,22 @@ public class TrafficSystemBackend : MonoBehaviour
             return false;
         }
 
-        if (compiledGraphCanPublish)
-        {
-            // Atomic reference publication: readers see the old complete graph
-            // or this complete immutable graph, never compiler working buffers.
-            CurrentTrafficGraphSnapshot = compiledGraph;
-            CurrentManagedAdapterResult = adapterResult;
-            if (adapterResult != null)
-            {
-                newNodes = adapterResult.Nodes;
-                newEdges = adapterResult.Edges;
-                newIncoming = adapterResult.IncomingByCell;
-                newOutgoing = adapterResult.OutgoingByCell;
-            }
-        }
+        CurrentTrafficGraphSnapshot = compiledGraph;
+        CurrentManagedAdapterResult = adapterResult;
         CurrentRoadSnapshot = sourceSnapshot;
-        allNodes = newNodes ?? new List<TrafficNode>();
-        allEdges = newEdges ?? new List<TrafficEdge>();
-        _intersectionIncoming =
-            newIncoming ?? new Dictionary<Vector2Int, List<LaneEndpoint>>();
-        _intersectionOutgoing =
-            newOutgoing ?? new Dictionary<Vector2Int, List<LaneEndpoint>>();
+        allNodes = adapterResult != null
+            ? adapterResult.Nodes
+            : new List<TrafficNode>();
+        allEdges = adapterResult != null
+            ? adapterResult.Edges
+            : new List<TrafficEdge>();
+        _intersectionIncoming = adapterResult != null
+            ? adapterResult.IncomingByCell
+            : new Dictionary<Vector2Int, List<LaneEndpoint>>();
+        _intersectionOutgoing = adapterResult != null
+            ? adapterResult.OutgoingByCell
+            : new Dictionary<Vector2Int, List<LaneEndpoint>>();
+
         RebuildStableEdgeLookup();
         _spatialIndex.Rebuild(allEdges);
         RebuildIntersectionControllers();
@@ -518,8 +381,12 @@ public class TrafficSystemBackend : MonoBehaviour
             CurrentTrafficGraphSnapshot != null
                 ? CurrentTrafficGraphSnapshot.Version
                 : TrafficGraphVersion.Invalid;
-        CurrentPerformanceSnapshot.GraphNodeCount = allNodes != null ? allNodes.Count : 0;
-        CurrentPerformanceSnapshot.GraphEdgeCount = allEdges != null ? allEdges.Count : 0;
+        CurrentPerformanceSnapshot.GraphNodeCount = allNodes != null
+            ? allNodes.Count
+            : 0;
+        CurrentPerformanceSnapshot.GraphEdgeCount = allEdges != null
+            ? allEdges.Count
+            : 0;
         CurrentPerformanceSnapshot.IndexedLaneCount =
             _spatialIndex.IndexedLaneCount;
         CurrentPerformanceSnapshot.IndexedLaneSegmentCount =
@@ -535,20 +402,24 @@ public class TrafficSystemBackend : MonoBehaviour
     {
         _intersectionControllers.Clear();
 
-        Dictionary<Vector2Int, List<TrafficEdge>> movementEdgesByCell = new Dictionary<Vector2Int, List<TrafficEdge>>();
+        var movementEdgesByCell = new Dictionary<Vector2Int, List<TrafficEdge>>();
         foreach (TrafficEdge edge in allEdges)
         {
             edge.exitController = null;
-            if (edge.kind != TrafficEdgeKind.IntersectionMovement || !edge.hasControlledNodeCell)
+            if (edge.kind != TrafficEdgeKind.IntersectionMovement ||
+                !edge.hasControlledNodeCell)
             {
                 continue;
             }
 
-            if (!movementEdgesByCell.TryGetValue(edge.controlledNodeCell, out List<TrafficEdge> movementEdges))
+            if (!movementEdgesByCell.TryGetValue(
+                    edge.controlledNodeCell,
+                    out List<TrafficEdge> movementEdges))
             {
                 movementEdges = new List<TrafficEdge>();
                 movementEdgesByCell[edge.controlledNodeCell] = movementEdges;
             }
+
             movementEdges.Add(edge);
         }
 
@@ -560,7 +431,8 @@ public class TrafficSystemBackend : MonoBehaviour
                 RoadSystemBackend.Instance.Intersections.TryGetValue(kvp.Key, out data);
             }
 
-            IIntersectionController controller = CreateIntersectionController(kvp.Key, data, kvp.Value);
+            IIntersectionController controller =
+                CreateIntersectionController(kvp.Key, data, kvp.Value);
             _intersectionControllers[kvp.Key] = controller;
 
             foreach (TrafficEdge edge in kvp.Value)
@@ -570,9 +442,14 @@ public class TrafficSystemBackend : MonoBehaviour
         }
     }
 
-    private IIntersectionController CreateIntersectionController(Vector2Int cell, IntersectionData data, List<TrafficEdge> movementEdges)
+    private IIntersectionController CreateIntersectionController(
+        Vector2Int cell,
+        IntersectionData data,
+        List<TrafficEdge> movementEdges)
     {
-        IntersectionRuleType ruleType = data != null ? data.RuleType : IntersectionRuleType.FreeForAll;
+        IntersectionRuleType ruleType = data != null
+            ? data.RuleType
+            : IntersectionRuleType.FreeForAll;
         IIntersectionController controller = ruleType == IntersectionRuleType.FIFO
             ? new FIFOIntersectionController()
             : new FreeForAllIntersectionController();
@@ -580,295 +457,12 @@ public class TrafficSystemBackend : MonoBehaviour
         return controller;
     }
 
-    // --- RUNTIME HELPERS ---
-
-    private List<Vector3> TraceTrafficPathWithCells(
-        RoadNetworkSnapshot roadSnapshot,
-        Vector2Int startCell,
-        Vector2Int firstNeighbor,
-        out Vector2Int endCell,
-        List<Vector2Int> visitedCells)
-    {
-        return TraceTrafficPathInternal(
-            roadSnapshot,
-            startCell,
-            firstNeighbor,
-            out endCell,
-            visitedCells);
-    }
-
-    private List<Vector3> TraceTrafficPath(
-        RoadNetworkSnapshot roadSnapshot,
-        Vector2Int startCell,
-        Vector2Int firstNeighbor,
-        out Vector2Int endCell)
-    {
-        return TraceTrafficPathInternal(
-            roadSnapshot,
-            startCell,
-            firstNeighbor,
-            out endCell,
-            null);
-    }
-
-    private List<Vector3> TraceTrafficPathInternal(
-        RoadNetworkSnapshot roadSnapshot,
-        Vector2Int startCell,
-        Vector2Int firstNeighbor,
-        out Vector2Int endCell,
-        List<Vector2Int> visitedCells)
-    {
-        var rawWaypoints = new List<Vector3>();
-        endCell = firstNeighbor;
-
-        if (!roadSnapshot.TryGetCell(startCell, out RoadCellRecord startCellData) ||
-            !roadSnapshot.TryGetCell(firstNeighbor, out RoadCellRecord firstCellData))
-        {
-            return rawWaypoints;
-        }
-
-        if (IsRealIntersection(startCellData) || IsTransitionNode(startCellData))
-        {
-            rawWaypoints.Add(Vector3.Lerp(
-                startCellData.WorldCenter,
-                firstCellData.WorldCenter,
-                GetNodePullback(roadSnapshot, startCell, firstNeighbor, startCellData)));
-        }
-        else
-        {
-            rawWaypoints.Add(startCellData.WorldCenter);
-        }
-
-        visitedCells?.Add(startCell);
-
-        Vector2Int previous = startCell;
-        Vector2Int current = firstNeighbor;
-        while (roadSnapshot.TryGetCell(current, out RoadCellRecord currentCell))
-        {
-            visitedCells?.Add(current);
-            endCell = current;
-
-            bool isIntersection = IsRealIntersection(currentCell);
-            bool isTransition = IsTransitionNode(currentCell);
-            if (isIntersection || isTransition || current == startCell)
-            {
-                if (isIntersection || isTransition)
-                {
-                    if (roadSnapshot.TryGetCell(previous, out RoadCellRecord previousCell))
-                    {
-                        rawWaypoints.Add(Vector3.Lerp(
-                            currentCell.WorldCenter,
-                            previousCell.WorldCenter,
-                            GetNodePullback(
-                                roadSnapshot,
-                                current,
-                                previous,
-                                currentCell)));
-                    }
-                }
-                else
-                {
-                    rawWaypoints.Add(currentCell.WorldCenter);
-                }
-
-                break;
-            }
-
-            rawWaypoints.Add(currentCell.WorldCenter);
-
-            Vector2Int next = current;
-            for (int directionIndex = 0; directionIndex < 8; directionIndex++)
-            {
-                int directionBit = 1 << directionIndex;
-                if (!currentCell.HasPhysicalConnection(directionBit)) continue;
-
-                Vector2Int candidate =
-                    RoadGridDirectionUtility.GetNeighborPosition(current, directionBit);
-                if (candidate != previous)
-                {
-                    next = candidate;
-                    break;
-                }
-            }
-
-            if (next == current) break;
-            previous = current;
-            current = next;
-        }
-
-        return rawWaypoints;
-    }
-
-    private bool IsRealIntersection(RoadCellRecord cell) =>
-        cell.NodeKind == RoadNodeKind.Intersection;
-
-    private bool IsTransitionNode(RoadCellRecord cell) =>
-        cell.NodeKind == RoadNodeKind.Transition;
-
-    private bool IsRealNode(RoadCellRecord cell)
-    {
-        return cell.NodeKind == RoadNodeKind.RoadEnd ||
-               cell.NodeKind == RoadNodeKind.Transition ||
-               cell.NodeKind == RoadNodeKind.Intersection;
-    }
-
-    private float GetNodePullback(
-        RoadNetworkSnapshot roadSnapshot,
-        Vector2Int nodeCell,
-        Vector2Int legNeighbor,
-        RoadCellRecord nodeData)
-    {
-        float basePullback = Mathf.Clamp01(intersectionNodesPullback);
-        if (!IsRealIntersection(nodeData) ||
-            !roadSnapshot.TryGetCell(legNeighbor, out RoadCellRecord legNeighborData))
-        {
-            return basePullback;
-        }
-
-        Vector2 legOffset = legNeighbor - nodeCell;
-        float gridDistance = legOffset.magnitude;
-        if (gridDistance <= 0.001f) return basePullback;
-
-        Vector2 legDirection = legOffset / gridDistance;
-        float legWorldDistance = Vector3.Distance(
-            nodeData.WorldCenter,
-            legNeighborData.WorldCenter);
-        if (legWorldDistance <= 0.001f) return basePullback;
-
-        RoadProfile legRoadProfile = GetTrueSegmentRoadProfile(
-            roadSnapshot,
-            nodeCell,
-            legNeighbor,
-            nodeData);
-        float legHalfWidth =
-            legRoadProfile != null ? legRoadProfile.RoadWidthUnits * 0.5f : 0f;
-        float requiredWorldDistance = basePullback * legWorldDistance;
-
-        for (int directionIndex = 0; directionIndex < 8; directionIndex++)
-        {
-            int directionBit = 1 << directionIndex;
-            if (!nodeData.HasPhysicalConnection(directionBit)) continue;
-
-            Vector2Int otherNeighbor =
-                RoadGridDirectionUtility.GetNeighborPosition(nodeCell, directionBit);
-            if (otherNeighbor == legNeighbor) continue;
-
-            Vector2 otherOffset = otherNeighbor - nodeCell;
-            if (otherOffset.sqrMagnitude <= 0.001f) continue;
-
-            Vector2 otherDirection = otherOffset.normalized;
-            float crossingSine = Mathf.Abs(
-                legDirection.x * otherDirection.y -
-                legDirection.y * otherDirection.x);
-            if (crossingSine <= 0.001f) continue;
-
-            RoadProfile otherRoadProfile = GetTrueSegmentRoadProfile(
-                roadSnapshot,
-                nodeCell,
-                otherNeighbor,
-                nodeData);
-            float otherHalfWidth =
-                otherRoadProfile != null ? otherRoadProfile.RoadWidthUnits * 0.5f : 0f;
-            float directionAlignment = Mathf.Abs(Vector2.Dot(
-                legDirection,
-                otherDirection));
-            float overlapDistance =
-                (otherHalfWidth +
-                 legHalfWidth * directionAlignment +
-                 intersectionBoundaryPadding) /
-                crossingSine;
-            requiredWorldDistance = Mathf.Max(requiredWorldDistance, overlapDistance);
-        }
-
-        float requiredPullback = requiredWorldDistance / legWorldDistance;
-        float maximumPullback = Mathf.Max(
-            basePullback,
-            maxIntersectionNodesPullback);
-        if (roadSnapshot.TryGetCell(legNeighbor, out RoadCellRecord neighborData) &&
-            IsRealNode(neighborData))
-        {
-            maximumPullback = Mathf.Min(maximumPullback, 0.49f);
-        }
-
-        return Mathf.Clamp(requiredPullback, basePullback, maximumPullback);
-    }
-
-    private string GetTwoWayHash(Vector2Int a, Vector2Int b)
-    {
-        // Ensure the hash is identical regardless of which direction we check first
-        return (a.x < b.x || (a.x == b.x && a.y < b.y)) 
-            ? $"{a}<->{b}" 
-            : $"{b}<->{a}";
-    }
-
-    private List<Vector3> ApplyTrafficChaikin(List<Vector3> path, int iterations)
-    {
-        if (path.Count < 3 || iterations == 0) return path;
-        bool isClosedLoop = Vector3.Distance(path[0], path[path.Count - 1]) < 0.01f;
-        
-        List<Vector3> workingPath = new List<Vector3>(path);
-        if (isClosedLoop) workingPath.RemoveAt(workingPath.Count - 1);
-
-        for (int iter = 0; iter < iterations; iter++)
-        {
-            List<Vector3> newPath = new List<Vector3>();
-            if (!isClosedLoop) newPath.Add(workingPath[0]);
-
-            for (int i = 0; i < workingPath.Count - (isClosedLoop ? 0 : 1); i++)
-            {
-                Vector3 p0 = workingPath[i];
-                Vector3 p1 = workingPath[(i + 1) % workingPath.Count];
-                newPath.Add(Vector3.Lerp(p0, p1, 0.25f));
-                newPath.Add(Vector3.Lerp(p0, p1, 0.75f));
-            }
-
-            if (!isClosedLoop) newPath.Add(workingPath[workingPath.Count - 1]);
-            workingPath = newPath;
-        }
-
-        if (isClosedLoop) workingPath.Add(workingPath[0]);
-        return workingPath;
-    }
-
-    private RoadProfile GetTrueSegmentRoadProfile(
-        RoadNetworkSnapshot roadSnapshot,
-        Vector2Int startCellPosition,
-        Vector2Int neighborCellPosition,
-        RoadCellRecord startCell)
-    {
-        if (roadSnapshot.TryGetCell(neighborCellPosition, out RoadCellRecord neighborCell) &&
-            CountConnections(neighborCell.PhysicalConnections) <= 2 &&
-            roadSnapshot.TryGetRoadProfile(neighborCell.RoadProfileId, out RoadProfile neighborProfile))
-        {
-            return neighborProfile;
-        }
-
-        if (CountConnections(startCell.PhysicalConnections) <= 2 &&
-            roadSnapshot.TryGetRoadProfile(startCell.RoadProfileId, out RoadProfile startProfile))
-        {
-            return startProfile;
-        }
-
-        roadSnapshot.TryGetRoadProfile(startCell.RoadProfileId, out RoadProfile fallbackProfile);
-        return fallbackProfile;
-    }
-
-    private int CountConnections(int connections)
-    {
-        int count = 0;
-        for (int directionIndex = 0; directionIndex < 8; directionIndex++)
-        {
-            if ((connections & (1 << directionIndex)) != 0) count++;
-        }
-
-        return count;
-    }
-
     public TrafficEdge GetClosestLane(Vector3 worldPoint, float searchRadius)
     {
         if (_spatialIndex.IsReady)
         {
-            TrafficEdge indexed = _spatialIndex.GetClosestLane(worldPoint, searchRadius);
+            TrafficEdge indexed =
+                _spatialIndex.GetClosestLane(worldPoint, searchRadius);
             RefreshPerformanceSnapshot();
             return indexed;
         }
@@ -882,7 +476,10 @@ public class TrafficSystemBackend : MonoBehaviour
 
             for (int i = 0; i < edge.waypoints.Count - 1; i++)
             {
-                float dist = TrafficSpatialIndex.DistanceToLineSegment(worldPoint, edge.waypoints[i], edge.waypoints[i + 1]);
+                float dist = TrafficSpatialIndex.DistanceToLineSegment(
+                    worldPoint,
+                    edge.waypoints[i],
+                    edge.waypoints[i + 1]);
                 if (dist < minDistance)
                 {
                     minDistance = dist;
@@ -890,20 +487,27 @@ public class TrafficSystemBackend : MonoBehaviour
                 }
             }
         }
+
         return closestEdge;
     }
 
-    public List<TrafficEdge> GetClosestLanes(Vector3 worldPoint, float searchRadius, int maxResults = 3)
+    public List<TrafficEdge> GetClosestLanes(
+        Vector3 worldPoint,
+        float searchRadius,
+        int maxResults = 3)
     {
         if (_spatialIndex.IsReady)
         {
             List<TrafficEdge> indexed =
-                _spatialIndex.GetClosestLanes(worldPoint, searchRadius, maxResults);
+                _spatialIndex.GetClosestLanes(
+                    worldPoint,
+                    searchRadius,
+                    maxResults);
             RefreshPerformanceSnapshot();
             return indexed;
         }
 
-        List<KeyValuePair<TrafficEdge, float>> candidates = new List<KeyValuePair<TrafficEdge, float>>();
+        var candidates = new List<KeyValuePair<TrafficEdge, float>>();
 
         foreach (TrafficEdge edge in allEdges)
         {
@@ -912,95 +516,125 @@ public class TrafficSystemBackend : MonoBehaviour
             float minDistanceForEdge = float.MaxValue;
             for (int i = 0; i < edge.waypoints.Count - 1; i++)
             {
-                float dist = TrafficSpatialIndex.DistanceToLineSegment(worldPoint, edge.waypoints[i], edge.waypoints[i + 1]);
+                float dist = TrafficSpatialIndex.DistanceToLineSegment(
+                    worldPoint,
+                    edge.waypoints[i],
+                    edge.waypoints[i + 1]);
                 if (dist < minDistanceForEdge) minDistanceForEdge = dist;
             }
 
             if (minDistanceForEdge <= searchRadius)
             {
-                candidates.Add(new KeyValuePair<TrafficEdge, float>(edge, minDistanceForEdge));
+                candidates.Add(
+                    new KeyValuePair<TrafficEdge, float>(
+                        edge,
+                        minDistanceForEdge));
             }
         }
 
-        candidates.Sort((a, b) => a.Value.CompareTo(b.Value));
-        
-        List<TrafficEdge> result = new List<TrafficEdge>();
-        for(int i = 0; i < Mathf.Min(maxResults, candidates.Count); i++) result.Add(candidates[i].Key);
-        
+        candidates.Sort((left, right) => left.Value.CompareTo(right.Value));
+
+        var result = new List<TrafficEdge>();
+        int count = Mathf.Min(maxResults, candidates.Count);
+        for (int i = 0; i < count; i++) result.Add(candidates[i].Key);
+
         return result;
     }
 
-    // --- GIZMO DEBUGGING ---
 #if UNITY_EDITOR
     private void OnDrawGizmos()
     {
         if (allEdges == null || allNodes == null) return;
 
-        // Massive performance saver: Only render traffic nodes/paths around the active SceneView camera!
-        Camera cam = Camera.current ?? UnityEditor.SceneView.currentDrawingSceneView?.camera;
+        Camera cam = Camera.current ??
+                     UnityEditor.SceneView.currentDrawingSceneView?.camera;
         Vector3 camPos = cam != null ? cam.transform.position : Vector3.zero;
-        float cullDistanceSqr = 200f * 200f; // Limit rendering to a 200 unit radius
+        float cullDistanceSqr = 200f * 200f;
 
         if (showLogicalConnections)
         {
             foreach (TrafficEdge edge in allEdges)
             {
-                if (cam != null && (edge.startNode.position - camPos).sqrMagnitude > cullDistanceSqr) continue;
+                if (cam != null &&
+                    (edge.startNode.position - camPos).sqrMagnitude >
+                    cullDistanceSqr)
+                {
+                    continue;
+                }
 
                 Gizmos.color = edge.edgeColor;
                 if (edge.waypoints.Count >= 2)
                 {
-                    // Swapped slow DrawAAPolyLine for ultra-fast Gizmos.DrawLine
                     for (int i = 0; i < edge.waypoints.Count - 1; i++)
+                    {
                         Gizmos.DrawLine(edge.waypoints[i], edge.waypoints[i + 1]);
+                    }
                 }
 
                 Gizmos.color = _nodeColor;
-                Gizmos.DrawSphere(edge.endNode.position + Vector3.up * 0.3f, 0.05f);
+                Gizmos.DrawSphere(
+                    edge.endNode.position + Vector3.up * 0.3f,
+                    0.05f);
             }
-            return; 
+
+            return;
         }
 
         if (!showWaypoints) return;
 
         foreach (TrafficNode node in allNodes)
         {
-            if (cam != null && (node.position - camPos).sqrMagnitude > cullDistanceSqr) continue;
+            if (cam != null &&
+                (node.position - camPos).sqrMagnitude > cullDistanceSqr)
+            {
+                continue;
+            }
 
             if (node.outgoingEdges.Count == 0)
             {
                 Gizmos.color = Color.red;
                 Gizmos.DrawSphere(node.position + Vector3.up * 0.5f, 0.4f);
             }
+
             Gizmos.color = _nodeColor;
             Gizmos.DrawSphere(node.position, 0.03f);
         }
 
         foreach (TrafficEdge edge in allEdges)
         {
-            if (cam != null && (edge.startNode.position - camPos).sqrMagnitude > cullDistanceSqr) continue;
+            if (cam != null &&
+                (edge.startNode.position - camPos).sqrMagnitude >
+                cullDistanceSqr)
+            {
+                continue;
+            }
 
             Gizmos.color = edge.edgeColor;
 
             if (edge.isIntersection)
             {
-                Vector3 prev = edge.waypoints[0] + (Vector3.up * 0.15f);
+                Vector3 previous = edge.waypoints[0] + Vector3.up * 0.15f;
                 for (int i = 1; i < edge.waypoints.Count; i++)
                 {
-                    Vector3 curr = edge.waypoints[i] + (Vector3.up * 0.15f);
-                    Gizmos.DrawLine(prev, curr);
-                    prev = curr;
+                    Vector3 current = edge.waypoints[i] + Vector3.up * 0.15f;
+                    Gizmos.DrawLine(previous, current);
+                    previous = current;
                 }
 
                 if (edge.waypoints.Count > 0)
                 {
-                    Gizmos.DrawSphere(edge.waypoints[edge.waypoints.Count - 1] + (Vector3.up * 0.15f), 0.04f);
+                    Gizmos.DrawSphere(
+                        edge.waypoints[edge.waypoints.Count - 1] +
+                        Vector3.up * 0.15f,
+                        0.04f);
                 }
             }
             else
             {
                 for (int i = 0; i < edge.waypoints.Count - 1; i++)
+                {
                     Gizmos.DrawLine(edge.waypoints[i], edge.waypoints[i + 1]);
+                }
             }
         }
     }

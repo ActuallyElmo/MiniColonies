@@ -15,6 +15,7 @@ public sealed class TrafficSimulationClock
     }
 
     public float FixedDeltaSeconds => _fixedDeltaSeconds;
+    public float InterpolationAlpha => Mathf.Clamp01(_accumulator / _fixedDeltaSeconds);
 
     public int Accumulate(float frameDeltaSeconds)
     {

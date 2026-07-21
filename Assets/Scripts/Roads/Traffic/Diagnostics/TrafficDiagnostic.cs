@@ -55,7 +55,8 @@ public enum TrafficDiagnosticCode
     MissingPersistentProfileKey = 38,
     CompilerStageFailed = 39,
     SnapshotAdapterComparison = 40,
-    IllegalProfileCombination = 41
+    IllegalProfileCombination = 41,
+    InvalidDriverReactionTime = 42
 }
 
 public readonly struct TrafficDiagnosticSource : IEquatable<TrafficDiagnosticSource>

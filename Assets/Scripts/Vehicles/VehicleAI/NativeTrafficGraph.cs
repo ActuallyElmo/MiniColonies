@@ -150,7 +150,7 @@ public class NativeTrafficGraph : MonoBehaviour
                                            : Vector3.Distance(edge.startNode.position, edge.endNode.position),
                 isIntersection = edge.isIntersection,
                 isMergeEdge = edge.isMergeEdge,
-                laneChangePenalty = edge.isMergeEdge ? 0.5f : 0.0f,
+                laneChangePenalty = edge.isMergeEdge ? 4.0f : 0.0f,
 
                 isUTurn = edge.isUTurn,
                 uTurnPenalty = edge.isUTurn ? 0.3f : 0.0f,

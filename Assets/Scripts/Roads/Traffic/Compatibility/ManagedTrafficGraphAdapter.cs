@@ -165,29 +165,6 @@ public static class ManagedTrafficGraphAdapter
         return true;
     }
 
-    public static void Compare(
-        ManagedTrafficGraphAdapterResult adapter,
-        IReadOnlyList<TrafficNode> legacyNodes,
-        IReadOnlyList<TrafficEdge> legacyEdges,
-        TrafficDiagnosticCollection diagnostics)
-    {
-        if (adapter == null || diagnostics == null) return;
-        int legacyNodeCount = legacyNodes != null ? legacyNodes.Count : 0;
-        int legacyEdgeCount = legacyEdges != null ? legacyEdges.Count : 0;
-        if (adapter.Nodes.Count == legacyNodeCount &&
-            adapter.Edges.Count == legacyEdgeCount)
-        {
-            diagnostics.AddInfo(
-                TrafficDiagnosticCode.SnapshotAdapterComparison,
-                "Snapshot adapter comparison matched legacy managed graph counts.");
-            return;
-        }
-
-        diagnostics.AddWarning(
-            TrafficDiagnosticCode.SnapshotAdapterComparison,
-            $"Snapshot adapter comparison differs from legacy managed graph counts: nodes {adapter.Nodes.Count}/{legacyNodeCount}, edges {adapter.Edges.Count}/{legacyEdgeCount}.");
-    }
-
     private static TrafficNode GetOrCreateLaneDistanceNode(
         TrafficGraphSnapshot graph,
         ManagedTrafficGraphAdapterResult result,
