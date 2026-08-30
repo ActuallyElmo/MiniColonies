@@ -12,11 +12,26 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 3c57998ac996e974d971f2cfa0feaef2, type: 3}
   m_Name: SmallOneWayRoad
   m_EditorClassIdentifier: 
-  roadName: SmallOneWay
+  trafficProfileKey:
+  allowedTrafficPermissions: -1
+  allowedVehicleCapabilities: -1
+  supportedTrafficMovements: -1
+  roadName: SmallRoad
   lanesPerWay: 1
-  isTwoWay: 0
+  isTwoWay: 1
   speedLimit: 50
+  CanConnectToPort: 1
   roadWidth: 0.15
   curbWidth: 0
   roadMaterial: {fileID: 2100000, guid: 081abfbfbd4d195419434bb7a750f756, type: 2}
   curbMaterial: {fileID: 2100000, guid: 0db424e72fedb4b49ac9cd5874a85e64, type: 2}
+  roadMarkingMaterial: {fileID: 2100000, guid: 8877a25fa023beb49a295e7bf34a6a0e, type: 2}
+  showCenterDivider: 0
+  centerDividerWidth: 0.025
+  showLaneDividers: 0
+  laneDividerWidth: 0.0151
+  laneDividerDashLength: 0.18
+  laneDividerGapLength: 0.14
+  showStopLinesAtIntersections: 1
+  stopLineWidth: 0.035
+  markingSurfaceOffset: 0.0345

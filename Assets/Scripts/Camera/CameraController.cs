@@ -1,7 +1,12 @@
+using System;
 using UnityEngine;
 
 public class CameraController : MonoBehaviour
 {
+    private static readonly int CameraZoomPercentageId = Shader.PropertyToID("_CameraZoomPercentage");
+    private static readonly int CameraZoomPercentageSetId = Shader.PropertyToID("_CameraZoomPercentageSet");
+
+    public static CameraController Instance { get; private set; }
 
     [Header("Movement Settings")]
     [Tooltip("Speed when fully zoomed IN.")]
@@ -16,6 +21,14 @@ public class CameraController : MonoBehaviour
     public float minZoom = 5f;
     public float maxZoom = 20f;
     public float zoomSmoothTime = 0.1f;
+    [Range(0f, 1f)]
+    [Tooltip("How strongly zooming moves toward the mouse. Zooming out moves away by the same amount.")]
+    public float zoomMouseBias = 0.2f;
+
+    [Header("Zoom State (Read Only)")]
+    [SerializeField, Range(0f, 100f)]
+    [Tooltip("Current camera zoom. 100% is fully zoomed in and 0% is fully zoomed out.")]
+    private float currentZoomPercentage;
 
     [Header("Boundary Settings")]
     [Tooltip("Padding (X = Horizontal, Y = Vertical/Z-axis) when fully zoomed IN.")]
@@ -30,12 +43,46 @@ public class CameraController : MonoBehaviour
     // Zoom specific variables
     private float targetZoom;
     private float zoomDampVelocity;
+    private Vector3 zoomBiasScreenPosition;
+    private bool hasZoomBiasPosition;
     private WorldManager worldManager;
 
-    void Start()
-    {
-        targetZoom = cam.orthographicSize;
+    /// <summary>
+    /// Current camera zoom from 0 to 100. A value of 100 is fully zoomed in.
+    /// </summary>
+    public float CurrentZoomPercentage => currentZoomPercentage;
 
+    /// <summary>
+    /// Current camera zoom normalized from 0 to 1. A value of 1 is fully zoomed in.
+    /// </summary>
+    public float CurrentZoom01 => currentZoomPercentage * 0.01f;
+
+    /// <summary>
+    /// Raised whenever the rendered camera zoom percentage changes.
+    /// </summary>
+    public event Action<float> ZoomPercentageChanged;
+
+    private void Awake()
+    {
+        Instance = this;
+
+        if (cam == null) cam = GetComponent<Camera>();
+        if (cam == null)
+        {
+            enabled = false;
+            Debug.LogError("CameraController requires a Camera reference.", this);
+            return;
+        }
+
+        NormalizeZoomRange();
+        targetZoom = cam.orthographicSize;
+        targetZoom = Mathf.Clamp(targetZoom, minZoom, maxZoom);
+
+        PublishZoomPercentage(true);
+    }
+
+    private void Start()
+    {
         worldManager = WorldManager.Instance;
     }
 
@@ -43,6 +90,7 @@ public class CameraController : MonoBehaviour
     {
         HandleMovement();
         HandleZoom();
+        PublishZoomPercentage();
     }
 
     private void HandleMovement()
@@ -52,12 +100,11 @@ public class CameraController : MonoBehaviour
         float vertical = Input.GetAxisRaw("Vertical");
         Vector3 inputDir = new Vector3(horizontal, 0, vertical).normalized;
 
-        // Calculate how zoomed in/out we are (0.0 to 1.0)
-        float zoomPercentage = Mathf.InverseLerp(minZoom, maxZoom, cam.orthographicSize);
+        // Movement speed increases as the camera zooms out.
+        float zoomedOut01 = 1f - CurrentZoom01;
         
-        // Lerp uses that 0 to 1 percentage to find the exact speed and padding we need.
-        float currentTargetSpeed = Mathf.Lerp(minSpeed, maxSpeed, zoomPercentage);
-        Vector2 currentPadding = Vector2.Lerp(minZoomPadding, maxZoomPadding, zoomPercentage);
+        // Lerp uses that 0 to 1 percentage to find the exact speed we need.
+        float currentTargetSpeed = Mathf.Lerp(minSpeed, maxSpeed, zoomedOut01);
 
         // 2. Calculate the exact velocity we WANT right now based on input
         Vector3 targetVelocity = inputDir * currentTargetSpeed;
@@ -69,25 +116,7 @@ public class CameraController : MonoBehaviour
         Vector3 newPosition = transform.position + currentVelocity * Time.deltaTime;
 
         // 5. BOUNDARY CLAMPING
-        if (worldManager != null)
-        {
-            float physicalWorldSize = worldManager.worldSize * worldManager.cellSize;
-
-            // Apply the dynamic Vector2 padding. 
-            // Note: Vector2.y maps to the 3D Z-axis.
-            float minX = currentPadding.x;
-            float maxX = physicalWorldSize - currentPadding.x;
-            float minZ = currentPadding.y; 
-            float maxZ = physicalWorldSize - currentPadding.y;
-
-            // Prevent velocity buildup against the walls to stop the camera from feeling "sticky"
-            if (newPosition.x <= minX || newPosition.x >= maxX) currentVelocity.x = 0;
-            if (newPosition.z <= minZ || newPosition.z >= maxZ) currentVelocity.z = 0;
-
-            // Physically clamp the position
-            newPosition.x = Mathf.Clamp(newPosition.x, minX, maxX);
-            newPosition.z = Mathf.Clamp(newPosition.z, minZ, maxZ);
-        }
+        newPosition = ClampToWorldBounds(newPosition, zoomedOut01);
 
         // 6. Apply position
         transform.position = newPosition;
@@ -101,13 +130,130 @@ public class CameraController : MonoBehaviour
         {
             targetZoom -= scroll * zoomSensitivity;
             targetZoom = Mathf.Clamp(targetZoom, minZoom, maxZoom);
+            zoomBiasScreenPosition = Input.mousePosition;
+            hasZoomBiasPosition = true;
         }
 
-        cam.orthographicSize = Mathf.SmoothDamp(
+        float mouseBias = Mathf.Clamp01(zoomMouseBias);
+        float previousZoom = cam.orthographicSize;
+        Vector3 mousePointBeforeZoom = default;
+        bool hasMousePointBeforeZoom = hasZoomBiasPosition
+            && mouseBias > 0f
+            && TryGetGroundPoint(zoomBiasScreenPosition, out mousePointBeforeZoom);
+
+        float newZoom = Mathf.SmoothDamp(
             cam.orthographicSize, 
             targetZoom, 
             ref zoomDampVelocity, 
             zoomSmoothTime
         );
+
+        cam.orthographicSize = newZoom;
+
+        if (hasMousePointBeforeZoom
+            && !Mathf.Approximately(previousZoom, newZoom)
+            && TryGetGroundPoint(zoomBiasScreenPosition, out Vector3 mousePointAfterZoom))
+        {
+            // The cursor's projected world point moves toward the camera center as the
+            // view shrinks. Following part of that displacement biases zoom-in toward
+            // the cursor; the displacement naturally reverses while zooming out.
+            transform.position += (mousePointBeforeZoom - mousePointAfterZoom) * mouseBias;
+            transform.position = ClampToWorldBounds(
+                transform.position,
+                Mathf.InverseLerp(minZoom, maxZoom, newZoom)
+            );
+        }
+    }
+
+    private bool TryGetGroundPoint(Vector3 screenPosition, out Vector3 groundPoint)
+    {
+        Plane groundPlane = new Plane(Vector3.up, transform.position);
+        Ray mouseRay = cam.ScreenPointToRay(screenPosition);
+
+        if (groundPlane.Raycast(mouseRay, out float enter))
+        {
+            groundPoint = mouseRay.GetPoint(enter);
+            return true;
+        }
+
+        groundPoint = default;
+        return false;
+    }
+
+    private Vector3 ClampToWorldBounds(Vector3 position, float zoomedOut01)
+    {
+        if (worldManager == null) return position;
+
+        float physicalWorldSize = worldManager.worldSize * worldManager.cellSize;
+        Vector2 currentPadding = Vector2.Lerp(minZoomPadding, maxZoomPadding, zoomedOut01);
+
+        // Vector2.y maps to the 3D Z-axis.
+        float minX = currentPadding.x;
+        float maxX = physicalWorldSize - currentPadding.x;
+        float minZ = currentPadding.y;
+        float maxZ = physicalWorldSize - currentPadding.y;
+        NormalizeBounds(ref minX, ref maxX, physicalWorldSize * 0.5f);
+        NormalizeBounds(ref minZ, ref maxZ, physicalWorldSize * 0.5f);
+
+        // Prevent velocity buildup against the walls to stop the camera feeling sticky.
+        if (position.x <= minX || position.x >= maxX) currentVelocity.x = 0f;
+        if (position.z <= minZ || position.z >= maxZ) currentVelocity.z = 0f;
+
+        position.x = Mathf.Clamp(position.x, minX, maxX);
+        position.z = Mathf.Clamp(position.z, minZ, maxZ);
+        return position;
+    }
+
+    /// <summary>
+    /// Converts an orthographic size to a zoom percentage using this controller's range.
+    /// </summary>
+    public float GetZoomPercentage(float orthographicSize)
+    {
+        if (Mathf.Approximately(minZoom, maxZoom)) return 100f;
+
+        float zoomedOut01 = Mathf.InverseLerp(minZoom, maxZoom, orthographicSize);
+        return (1f - zoomedOut01) * 100f;
+    }
+
+    private void PublishZoomPercentage(bool forceNotification = false)
+    {
+        float newZoomPercentage = GetZoomPercentage(cam.orthographicSize);
+        bool changed = !Mathf.Approximately(currentZoomPercentage, newZoomPercentage);
+
+        currentZoomPercentage = newZoomPercentage;
+        Shader.SetGlobalFloat(CameraZoomPercentageId, currentZoomPercentage);
+        Shader.SetGlobalFloat(CameraZoomPercentageSetId, 1f);
+
+        if (changed || forceNotification)
+        {
+            ZoomPercentageChanged?.Invoke(currentZoomPercentage);
+        }
+    }
+
+    private void OnDisable()
+    {
+        Shader.SetGlobalFloat(CameraZoomPercentageSetId, 0f);
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+    }
+
+    private void NormalizeZoomRange()
+    {
+        minZoom = Mathf.Max(0.01f, minZoom);
+        maxZoom = Mathf.Max(minZoom, maxZoom);
+    }
+
+    private static void NormalizeBounds(
+        ref float minimum,
+        ref float maximum,
+        float fallback)
+    {
+        if (minimum <= maximum) return;
+
+        minimum = fallback;
+        maximum = fallback;
     }
 }

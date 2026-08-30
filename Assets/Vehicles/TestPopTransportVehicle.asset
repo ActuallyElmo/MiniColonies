@@ -15,7 +15,7 @@ MonoBehaviour:
   trafficProfileKey: 
   trafficCapabilities: 1
   trafficRoadPermissions: 1
-  vehicleName: 
+  vehicleName: TestPickup
   vehiclePrefab: {fileID: 8014586108714606, guid: 4ac341fda79d7194398715671f9147d3, type: 3}
   maximumVehicleSpeed: 1
   isLongVehicle: 0
@@ -28,5 +28,5 @@ MonoBehaviour:
   desiredTimeHeadwaySeconds: 0.01
   driverReactionTimeSeconds: 0.25
   maximumJerkUnitsPerSecondCubed: 10
-  vehicleSpaceUsed: 0
-  amountOfPopsTransported: 0
+  vehicleSpaceUsed: 1
+  amountOfPopsTransported: 3

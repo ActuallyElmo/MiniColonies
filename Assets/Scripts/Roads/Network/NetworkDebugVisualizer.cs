@@ -12,6 +12,8 @@ public class NetworkDebugVisualizer : MonoBehaviour
     public bool showConnectedBuildings = true;
     [Tooltip("Draws small spheres on the exact port cells that touch a network.")]
     public bool showBuildingPorts = true; 
+    [Tooltip("Draws pop transport debug counters above houses and factories.")]
+    public bool showPopTransportDebugLabels = true;
     public float gizmoHeightOffset = 0.5f;
 
     [Header("Controls")]
@@ -45,7 +47,7 @@ public class NetworkDebugVisualizer : MonoBehaviour
         }
 
         // --- PASS 2: DRAW BUILDINGS & PORTS ---
-        if (showConnectedBuildings || showBuildingPorts)
+        if (showConnectedBuildings || showBuildingPorts || showPopTransportDebugLabels)
         {
             foreach (Building building in BuildingSystemBackend.Instance.GetActiveBuildings())
             {
@@ -88,18 +90,67 @@ public class NetworkDebugVisualizer : MonoBehaviour
 
                         // If testing in the Unity Editor, draw a crisp text label with the ID!
                         #if UNITY_EDITOR
-                        GUIStyle style = new GUIStyle();
-                        style.normal.textColor = validNet.debugColor;
-                        style.fontStyle = FontStyle.Bold;
-                        Handles.Label(floatingPos + (Vector3.up * 0.5f) + (Vector3.right * 0.5f), $"Net ID: {validNet.id}", style);
+                        if (Event.current != null && GUI.skin != null)
+                        {
+                            GUIStyle style = new GUIStyle(GUI.skin.label);
+                            style.normal.textColor = validNet.debugColor;
+                            style.fontStyle = FontStyle.Bold;
+                            Handles.Label(floatingPos + (Vector3.up * 0.5f) + (Vector3.right * 0.5f), $"Net ID: {validNet.id}", style);
+                        }
                         #endif
 
                         // Push the next valid network ring higher up to prevent overlapping
                         stackHeight += 1.5f; 
                     }
                 }
+
+                if (showPopTransportDebugLabels)
+                {
+                    DrawPopTransportDebugLabel(building, centerPos);
+                }
             }
         }
+    }
+
+    private void DrawPopTransportDebugLabel(Building building, Vector3 centerPos)
+    {
+        if (building == null || building.data == null)
+        {
+            return;
+        }
+
+        string labelText = null;
+        Color labelColor = Color.white;
+
+        if (building.data is PopHousingBuildingData)
+        {
+            int sentVehicles = building.GetSentPopTransportVehicleCount();
+            int totalVehicles = building.GetTotalPopTransportVehicleCount();
+            labelText = $"Sent: {sentVehicles}/{totalVehicles}";
+            labelColor = new Color(0.35f, 0.9f, 1f);
+        }
+        else if (building.data is ResourceProductionBuildingData)
+        {
+            labelText =
+                $"Assigned pop vehicles: {building.GetAssignedPopTransportVehicleCount()}\n" +
+                $"Assigned pops: {building.GetAssignedPopCount()}/{building.GetTargetPopCount()}";
+            labelColor = new Color(1f, 0.78f, 0.25f);
+        }
+
+        if (string.IsNullOrEmpty(labelText))
+        {
+            return;
+        }
+
+        #if UNITY_EDITOR
+        if (Event.current != null && GUI.skin != null)
+        {
+            GUIStyle style = new GUIStyle(GUI.skin.label);
+            style.normal.textColor = labelColor;
+            style.fontStyle = FontStyle.Bold;
+            Handles.Label(centerPos + (Vector3.up * 3.5f), labelText, style);
+        }
+        #endif
     }
 
     private Vector3 GetWorldPosition(Vector2Int gridPos)

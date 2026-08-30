@@ -13,8 +13,8 @@ public class RoadNetworkManager : MonoBehaviour
     private HashSet<Vector2Int> _dirtyRoadCells = new HashSet<Vector2Int>();
     private HashSet<Building> _dirtyBuildings = new HashSet<Building>();
     
-    private bool _isTaskRunning = false;
-    private bool _commitRequested = false; // NEW: The gatekeeper flag
+    private bool _isTaskRunning;
+    private bool _commitRequested;
     
     public int networkIdCounter = 0;
 
@@ -22,8 +22,13 @@ public class RoadNetworkManager : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
     private void Start()
@@ -52,9 +57,10 @@ public class RoadNetworkManager : MonoBehaviour
         {
             RoadSystemBackend.Instance.OnRoadCellChanged -= HandleRoadChanged;
         }
+
+        if (Instance == this) Instance = null;
     }
 
-    // --- NEW: THE COMMIT GATEWAY ---
     public void CommitNetworkChanges()
     {
         _commitRequested = true;
@@ -62,8 +68,6 @@ public class RoadNetworkManager : MonoBehaviour
 
     private void Update()
     {
-        // CHANGE: We ONLY process the task if a Commit has been requested 
-        // (i.e., the player let go of the mouse).
         if (_commitRequested && !_isTaskRunning && (_dirtyRoadCells.Count > 0 || _dirtyBuildings.Count > 0))
         {
             _isTaskRunning = true;

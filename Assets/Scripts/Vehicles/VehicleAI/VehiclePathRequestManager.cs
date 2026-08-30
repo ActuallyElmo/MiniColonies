@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using UnityEngine;
 
 public class VehiclePathRequestManager : MonoBehaviour
@@ -11,24 +10,23 @@ public class VehiclePathRequestManager : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
-    public void RequestPath(VehicleAI requester, Vector3 targetPos, Action<Queue<Vector3>> callback)
+    private void OnDestroy()
     {
-        RequestPath(requester, targetPos, callback, null);
-    }
-
-    public void RequestPath(VehicleAI requester, Vector3 targetPos, Action<Queue<Vector3>> callback, Action<TrafficRoute> routeCallback, bool snapStartToClosestEdgeEndpoint = false)
-    {
-        RequestPath(requester, targetPos, callback, routeCallback, snapStartToClosestEdgeEndpoint, Vector2Int.zero, false, Vector2Int.zero, false);
+        if (Instance == this) Instance = null;
     }
 
     public void RequestPath(
         VehicleAI requester,
         Vector3 targetPos,
-        Action<Queue<Vector3>> callback,
         Action<TrafficRoute> routeCallback,
         bool snapStartToClosestEdgeEndpoint,
         Vector2Int startPortCell,
@@ -42,7 +40,6 @@ public class VehiclePathRequestManager : MonoBehaviour
         {
             Debug.LogWarning(
                 "Vehicle path request rejected because VehiclePathRequestManager.disableAllPathfinding is enabled.");
-            callback?.Invoke(null);
             routeCallback?.Invoke(null);
             return;
         }
@@ -50,7 +47,6 @@ public class VehiclePathRequestManager : MonoBehaviour
         if (requester == null)
         {
             Debug.LogWarning("Vehicle path request rejected because the requester is null.");
-            callback?.Invoke(null);
             routeCallback?.Invoke(null);
             return;
         }
@@ -59,13 +55,21 @@ public class VehiclePathRequestManager : MonoBehaviour
         {
             Debug.LogError(
                 $"Vehicle path request for {requester.name} failed because SimulationTaskManager.Instance is missing.");
-            callback?.Invoke(null);
             routeCallback?.Invoke(null);
             return;
         }
 
-        // NO LONGER capturing startPos here! We let the task fetch it dynamically when it runs.
-        VehiclePathfindingTask task = new VehiclePathfindingTask(requester, targetPos, callback, routeCallback, snapStartToClosestEdgeEndpoint, startPortCell, hasStartPortCell, targetPortCell, hasTargetPortCell, rerouteReason, congestionSnapshot);
+        VehiclePathfindingTask task = new VehiclePathfindingTask(
+            requester,
+            targetPos,
+            routeCallback,
+            snapStartToClosestEdgeEndpoint,
+            startPortCell,
+            hasStartPortCell,
+            targetPortCell,
+            hasTargetPortCell,
+            rerouteReason,
+            congestionSnapshot);
         SimulationTaskManager.Instance.EnqueueTask(task);
     }
 }

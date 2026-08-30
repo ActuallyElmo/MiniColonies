@@ -100,8 +100,8 @@ Material:
     - _GlossMapScale: 0
     - _Glossiness: 0
     - _GlossyReflections: 0
-    - _GradientSteps: 3.08
-    - _MaxHeight: 0.89
+    - _GradientSteps: 3.9
+    - _MaxHeight: 0.35
     - _Metallic: 0
     - _OcclusionStrength: 1
     - _Parallax: 0.005

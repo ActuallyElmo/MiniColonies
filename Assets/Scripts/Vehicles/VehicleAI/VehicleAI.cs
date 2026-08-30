@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.Collections;
+using System.Collections.Generic;
 
 public class VehicleAI : MonoBehaviour
 {
@@ -39,15 +40,29 @@ public class VehicleAI : MonoBehaviour
     private const float DefaultMaximumJerk = 30f;
     private const float DefaultDriverReactionTime = 0.25f;
     private const float VehicleRoadClearance = 0.03f;
+    private const int MaxReturnHomeRouteFailures = 3;
+    private const float ReturnHomeRetryDelaySeconds = 0.75f;
     private static ulong _nextSimulationSequence = 1UL;
+    private static readonly HashSet<VehicleAI> _vehiclesWaitingForReturn =
+        new HashSet<VehicleAI>();
 
     private Building _pendingTargetBuilding;
     private RoadNetwork _pendingNetwork;
     private bool _hasPendingAssignment;
     private RoadNetwork _activeNetwork;
     private Coroutine _enterRouteRetryCoroutine;
+    private Coroutine _returnHomeRetryCoroutine;
+    private Building _assignedPopFactory;
+    private int _assignedPopCount;
+    private bool _assignedPopsDelivered;
+    private int _returnHomeRouteFailures;
 
     public VehicleSimulationId SimulationId => simulationId;
+    public int AssignedPopCount => _assignedPopCount;
+    public bool CanReceivePopTransportAssignment =>
+        currentState == VehicleState.Idle &&
+        !isConveyorMoving &&
+        _assignedPopFactory == null;
 
     public VehicleSimulationId EnsureSimulationId()
     {
@@ -70,11 +85,6 @@ public class VehicleAI : MonoBehaviour
         gameObject.SetActive(false); 
     }
 
-    private void Update()
-    {
-    }
-
-    // --- NEW: LATE-BINDING PATHING ORIGIN ---
     public Vector3 GetPathingOrigin()
     {
         if (isConveyorMoving && currentEdge != null)
@@ -91,27 +101,52 @@ public class VehicleAI : MonoBehaviour
         _activeNetwork = network;
         currentState = VehicleState.Outbound;
         
-        Vector2Int exitPort = homeBuilding.GetClosestPort(PortType.Exit, _activeNetwork, targetBuilding.originCell);
+        if (!TryGetRoutePorts(homeBuilding, targetBuilding, targetBuilding.originCell, out Vector2Int exitPort, out Vector2Int entryPort))
+        {
+            Debug.LogWarning($"{GetVehicleDebugName()} could not dispatch because a compatible outbound port is unavailable. {DescribeRoutePortFailure(homeBuilding, targetBuilding)}");
+            RecallAndDeactivate();
+            return;
+        }
+
         TeleportToPort(exitPort);
         gameObject.SetActive(true);
 
-        Vector2Int entryPort = targetBuilding.GetClosestPort(PortType.Entry, _activeNetwork, exitPort);
         Vector3 targetWorldPos = GetWorldPositionOfPort(entryPort);
         RequestConveyorRoute(targetWorldPos, false, true, exitPort, entryPort);
     }
 
-    public void ReturnHome()
+    public bool ReturnHome()
     {
-        currentState = VehicleState.Inbound;
+        if (TryBeginReturnHome())
+        {
+            return true;
+        }
 
-        // Debug.Log("returnhome");
-        
-        Vector2Int exitPort = targetBuilding.GetClosestPort(PortType.Exit, _activeNetwork, homeBuilding.originCell);
+        StartReturnHomeRetry();
+        return false;
+    }
+
+    private bool TryBeginReturnHome()
+    {
+        if (isConveyorMoving)
+        {
+            return false;
+        }
+
+        RefreshActiveNetworkAfterGraphRebuild();
+
+        if (!TryGetRoutePorts(targetBuilding, homeBuilding, homeBuilding.originCell, out Vector2Int exitPort, out Vector2Int entryPort))
+        {
+            Debug.LogWarning($"{GetVehicleDebugName()} is waiting to return home because a compatible inbound port is unavailable. {DescribeRoutePortFailure(targetBuilding, homeBuilding)}");
+            return false;
+        }
+
+        currentState = VehicleState.Inbound;
         TeleportToPort(exitPort);
 
-        Vector2Int entryPort = homeBuilding.GetClosestPort(PortType.Entry, _activeNetwork, exitPort);
         Vector3 targetWorldPos = GetWorldPositionOfPort(entryPort);
         RequestConveyorRoute(targetWorldPos, false, true, exitPort, entryPort);
+        return true;
     }
 
     public void Reroute(Building newTarget, RoadNetwork network)
@@ -141,16 +176,31 @@ public class VehicleAI : MonoBehaviour
 
         if (currentState == VehicleState.Outbound)
         {
-            if (targetBuilding != null) destinationPort = targetBuilding.GetClosestPort(PortType.Entry, _activeNetwork, currentCell);
+            if (targetBuilding != null)
+            {
+                if (!targetBuilding.TryGetClosestPort(PortFlowDirection.Entry, _activeNetwork, currentCell, vehicleData, out destinationPort))
+                {
+                    RecallAndDeactivate();
+                    return;
+                }
+            }
             else
             {
                 currentState = VehicleState.Inbound;
-                destinationPort = homeBuilding.GetClosestPort(PortType.Entry, _activeNetwork, currentCell);
+                if (!homeBuilding.TryGetClosestPort(PortFlowDirection.Entry, _activeNetwork, currentCell, vehicleData, out destinationPort))
+                {
+                    RecallAndDeactivate();
+                    return;
+                }
             }
         }
         else 
         {
-            destinationPort = homeBuilding.GetClosestPort(PortType.Entry, _activeNetwork, currentCell);
+            if (!homeBuilding.TryGetClosestPort(PortFlowDirection.Entry, _activeNetwork, currentCell, vehicleData, out destinationPort))
+            {
+                RecallAndDeactivate();
+                return;
+            }
         }
 
         Vector3 targetWorldPos = GetWorldPositionOfPort(destinationPort);
@@ -171,6 +221,12 @@ public class VehicleAI : MonoBehaviour
             _enterRouteRetryCoroutine = null;
         }
 
+        if (_returnHomeRetryCoroutine != null)
+        {
+            StopCoroutine(_returnHomeRetryCoroutine);
+            _returnHomeRetryCoroutine = null;
+        }
+
         currentState = VehicleState.Idle;
         targetBuilding = null;
         _pendingTargetBuilding = null;
@@ -178,18 +234,178 @@ public class VehicleAI : MonoBehaviour
         _hasPendingAssignment = false;
         hasConveyorVisualPose = false;
 
+        if (homeBuilding != null)
+        {
+            transform.position =
+                GetWorldPositionOfPort(homeBuilding.originCell) +
+                (Vector3.up * VehicleRoadClearance);
+        }
+
+        ReleasePopDeliveryAssignment();
         StopAllCoroutines();
         gameObject.SetActive(false); 
     }
 
     public void RequestConveyorRerouteAfterGraphRebuild()
     {
+        RequestConveyorRerouteAfterGraphRebuild(false);
+    }
+
+    public void RequestConveyorRerouteAfterGraphRebuild(bool wasConveyorMoving)
+    {
         if (currentState == VehicleState.Idle || !gameObject.activeInHierarchy)
         {
             return;
         }
 
+        if (!isConveyorMoving &&
+            _assignedPopFactory != null &&
+            _assignedPopsDelivered)
+        {
+            if (wasConveyorMoving)
+            {
+                ForceConveyorReroute();
+            }
+            else
+            {
+                ReturnHome();
+            }
+
+            return;
+        }
+
         ForceConveyorReroute();
+    }
+
+    public static void NotifyTrafficGraphRebuiltForWaitingVehicles()
+    {
+        if (_vehiclesWaitingForReturn.Count == 0) return;
+
+        var waitingVehicles = new List<VehicleAI>(_vehiclesWaitingForReturn);
+        for (int i = 0; i < waitingVehicles.Count; i++)
+        {
+            VehicleAI vehicle = waitingVehicles[i];
+            if (vehicle == null || !vehicle.gameObject.activeInHierarchy)
+            {
+                _vehiclesWaitingForReturn.Remove(vehicle);
+                continue;
+            }
+
+            vehicle.RequestConveyorRerouteAfterGraphRebuild();
+        }
+    }
+
+    public bool RefreshActiveNetworkAfterGraphRebuild()
+    {
+        RoadNetworkManager networkManager = RoadNetworkManager.Instance;
+        if (networkManager == null)
+        {
+            return false;
+        }
+
+        if (_activeNetwork != null &&
+            networkManager.activeNetworks.Contains(_activeNetwork))
+        {
+            return true;
+        }
+
+        RoadNetwork replacement = null;
+        RouteCorridor corridor = conveyorRoute != null
+            ? conveyorRoute.Corridor
+            : null;
+
+        if (corridor != null &&
+            corridor.HasTargetPortCell &&
+            networkManager.cellToNetwork.TryGetValue(
+                corridor.TargetPortCell,
+                out RoadNetwork targetPortNetwork) &&
+            IsNetworkValidForCurrentTrip(targetPortNetwork))
+        {
+            replacement = targetPortNetwork;
+        }
+
+        if (replacement == null &&
+            corridor != null &&
+            corridor.HasStartPortCell &&
+            networkManager.cellToNetwork.TryGetValue(
+                corridor.StartPortCell,
+                out RoadNetwork startPortNetwork) &&
+            IsNetworkValidForCurrentTrip(startPortNetwork))
+        {
+            replacement = startPortNetwork;
+        }
+
+        if (replacement == null && WorldManager.Instance != null)
+        {
+            Vector2Int currentCell = new Vector2Int(
+                Mathf.FloorToInt(transform.position.x / WorldManager.Instance.cellSize),
+                Mathf.FloorToInt(transform.position.z / WorldManager.Instance.cellSize));
+
+            if (networkManager.cellToNetwork.TryGetValue(
+                    currentCell,
+                    out RoadNetwork currentCellNetwork) &&
+                IsNetworkValidForCurrentTrip(currentCellNetwork))
+            {
+                replacement = currentCellNetwork;
+            }
+        }
+
+        if (replacement == null && _activeNetwork != null)
+        {
+            foreach (Vector2Int oldNetworkCell in _activeNetwork.roadCells)
+            {
+                if (networkManager.cellToNetwork.TryGetValue(
+                        oldNetworkCell,
+                        out RoadNetwork overlappingNetwork) &&
+                    IsNetworkValidForCurrentTrip(overlappingNetwork))
+                {
+                    replacement = overlappingNetwork;
+                    break;
+                }
+            }
+        }
+
+        if (replacement == null && homeBuilding != null)
+        {
+            foreach (RoadNetwork homeNetwork in homeBuilding.validNetworks)
+            {
+                if (IsNetworkValidForCurrentTrip(homeNetwork))
+                {
+                    replacement = homeNetwork;
+                    break;
+                }
+            }
+        }
+
+        if (replacement == null)
+        {
+            return false;
+        }
+
+        _activeNetwork = replacement;
+        if (_hasPendingAssignment)
+        {
+            _pendingNetwork = replacement;
+        }
+
+        return true;
+    }
+
+    private bool IsNetworkValidForCurrentTrip(RoadNetwork network)
+    {
+        if (network == null)
+        {
+            return false;
+        }
+
+        if (homeBuilding != null &&
+            !homeBuilding.validNetworks.Contains(network))
+        {
+            return false;
+        }
+
+        return targetBuilding == null ||
+               targetBuilding.validNetworks.Contains(network);
     }
 
     // --- MOVEMENT LOGIC ---
@@ -209,7 +425,15 @@ public class VehicleAI : MonoBehaviour
             _enterRouteRetryCoroutine = null;
         }
 
-        if (TryEnterConveyorRoute(route)) return;
+        if (TryEnterConveyorRoute(route))
+        {
+            if (currentState == VehicleState.Inbound)
+            {
+                ResetReturnHomeRetryState();
+            }
+
+            return;
+        }
 
         Debug.LogWarning(
             $"{GetVehicleDebugName()} is waiting to enter conveyor route. {DescribeTrafficRouteFailure(route)}");
@@ -236,7 +460,26 @@ public class VehicleAI : MonoBehaviour
             yield return new WaitForSeconds(0.25f);
             if (TryEnterConveyorRoute(route))
             {
+                if (currentState == VehicleState.Inbound)
+                {
+                    ResetReturnHomeRetryState();
+                }
+
                 _enterRouteRetryCoroutine = null;
+                yield break;
+            }
+
+            if (route != null &&
+                route.FailureReason == RouteFailureReason.GraphVersionMismatch)
+            {
+                _enterRouteRetryCoroutine = null;
+                if (currentState == VehicleState.Inbound && _assignedPopFactory != null)
+                {
+                    HandleReturnHomeRouteFailure("return route became stale before the vehicle could enter traffic");
+                    yield break;
+                }
+
+                RequestConveyorRerouteAfterGraphRebuild();
                 yield break;
             }
         }
@@ -298,7 +541,7 @@ public class VehicleAI : MonoBehaviour
 
         Building retryTarget = targetBuilding;
         RoadNetwork retryNetwork = _activeNetwork;
-        VehiclePathRequestManager.Instance.RequestPath(this, targetWorldPos, null, (route) =>
+        VehiclePathRequestManager.Instance.RequestPath(this, targetWorldPos, (route) =>
         {
             if (route != null && route.ManagedEdges != null && route.ManagedEdges.Count > 0)
             {
@@ -308,13 +551,15 @@ public class VehicleAI : MonoBehaviour
             {
                 Debug.LogWarning(
                     $"{GetVehicleDebugName()} conveyor route failed. {DescribeTrafficRouteFailure(route)}");
+                if (currentState == VehicleState.Inbound && _assignedPopFactory != null)
+                {
+                    HandleReturnHomeRouteFailure("no return route could be built");
+                    return;
+                }
+
                 if (recoverOnFailure)
                 {
-                    RecallAndDeactivate();
-                    if (retryTarget != null && retryNetwork != null)
-                    {
-                        DispatchTo(retryTarget, retryNetwork);
-                    }
+                    ResetAtHomeAndRetryDispatch(retryTarget, retryNetwork);
                 }
                 else
                 {
@@ -329,15 +574,13 @@ public class VehicleAI : MonoBehaviour
         Building retryTarget = targetBuilding;
         RoadNetwork retryNetwork = _activeNetwork;
 
-        RecallAndDeactivate();
-        if (retryTarget != null && retryNetwork != null)
-        {
-            DispatchTo(retryTarget, retryNetwork);
-        }
+        ResetAtHomeAndRetryDispatch(retryTarget, retryNetwork);
     }
 
     private void ForceConveyorReroute()
     {
+        RefreshActiveNetworkAfterGraphRebuild();
+
         Building targetForRoute = targetBuilding;
         RoadNetwork networkForRoute = _activeNetwork;
 
@@ -354,11 +597,19 @@ public class VehicleAI : MonoBehaviour
         Vector2Int destinationPort;
         if (currentState == VehicleState.Outbound && targetForRoute != null)
         {
-            destinationPort = targetForRoute.GetClosestPort(PortType.Entry, networkForRoute, currentCell);
+            if (!targetForRoute.TryGetClosestPort(PortFlowDirection.Entry, networkForRoute, currentCell, vehicleData, out destinationPort))
+            {
+                RecallAndDeactivate();
+                return;
+            }
         }
         else
         {
-            destinationPort = homeBuilding.GetClosestPort(PortType.Entry, networkForRoute, currentCell);
+            if (!homeBuilding.TryGetClosestPort(PortFlowDirection.Entry, networkForRoute, currentCell, vehicleData, out destinationPort))
+            {
+                RecallAndDeactivate();
+                return;
+            }
         }
 
         RequestConveyorRoute(
@@ -371,7 +622,11 @@ public class VehicleAI : MonoBehaviour
 
     private void OnDestinationReached()
     {
-        if (currentState == VehicleState.Outbound) StartCoroutine(WaitAtTarget());
+        if (currentState == VehicleState.Outbound)
+        {
+            MarkPopDeliveryArrived();
+            StartCoroutine(WaitAtTarget());
+        }
         else if (currentState == VehicleState.Inbound) StartCoroutine(WaitAtHome());
     }
 
@@ -431,16 +686,75 @@ public class VehicleAI : MonoBehaviour
 
     private IEnumerator WaitAtTarget()
     {
-        yield return new WaitForSeconds(3f); 
-        ReturnHome();
+        yield return new WaitForSeconds(3f);
+
+        if (currentState == VehicleState.Outbound)
+        {
+            ReturnHome();
+        }
     }
 
     private IEnumerator WaitAtHome()
     {
+        if (vehicleData is PopTransportVehicleData)
+        {
+            CompletePopTransportReturnHome();
+            yield return new WaitForSeconds(3f);
+
+            if (!CanReceivePopTransportAssignment)
+            {
+                yield break;
+            }
+
+            if (homeBuilding != null && homeBuilding.TryDispatchPopTransportVehicle(this))
+            {
+                yield break;
+            }
+
+            RecallAndDeactivate();
+            yield break;
+        }
+
         yield return new WaitForSeconds(3f);
         ApplyPendingAssignment();
         if (targetBuilding != null) DispatchTo(targetBuilding, _activeNetwork);
         else RecallAndDeactivate();
+    }
+
+    private void CompletePopTransportReturnHome()
+    {
+        currentState = VehicleState.Idle;
+        targetBuilding = null;
+        _pendingTargetBuilding = null;
+        _pendingNetwork = null;
+        _hasPendingAssignment = false;
+        ReleasePopDeliveryAssignment();
+    }
+
+    private void ResetAtHomeAndRetryDispatch(
+        Building retryTarget,
+        RoadNetwork retryNetwork)
+    {
+        RecallAndDeactivate();
+
+        if (vehicleData is PopTransportVehicleData)
+        {
+            if (BuildingSystemBackend.Instance != null)
+            {
+                BuildingSystemBackend.Instance.RequestPopTransportDispatch();
+            }
+            else if (homeBuilding != null)
+            {
+                homeBuilding.TryDispatchPopTransportVehicle(this);
+            }
+
+            return;
+        }
+
+        if (retryTarget != null && retryNetwork != null)
+        {
+            DispatchTo(retryTarget, retryNetwork);
+        }
     }
 
     private void ApplyPendingAssignment()
@@ -459,6 +773,158 @@ public class VehicleAI : MonoBehaviour
     private void TeleportToPort(Vector2Int portCell)
     {
         transform.position = GetWorldPositionOfPort(portCell) + (Vector3.up * VehicleRoadClearance);
+    }
+
+    private void StartReturnHomeRetry()
+    {
+        if (_returnHomeRetryCoroutine != null ||
+            currentState == VehicleState.Idle ||
+            !gameObject.activeInHierarchy)
+        {
+            return;
+        }
+
+        _vehiclesWaitingForReturn.Add(this);
+        _returnHomeRetryCoroutine = StartCoroutine(RetryReturnHome());
+    }
+
+    private IEnumerator RetryReturnHome()
+    {
+        while (currentState != VehicleState.Idle &&
+               gameObject.activeInHierarchy)
+        {
+            yield return new WaitForSeconds(ReturnHomeRetryDelaySeconds);
+
+            if (isConveyorMoving)
+            {
+                continue;
+            }
+
+            if (TryBeginReturnHome())
+            {
+                StopReturnHomeRetryWait();
+                yield break;
+            }
+
+            if (!RegisterReturnHomeFailure("compatible return ports or route were unavailable"))
+            {
+                yield break;
+            }
+        }
+
+        StopReturnHomeRetryWait();
+    }
+
+    private void HandleReturnHomeRouteFailure(string reason)
+    {
+        if (!RegisterReturnHomeFailure(reason))
+        {
+            return;
+        }
+
+        StartReturnHomeRetry();
+    }
+
+    private bool RegisterReturnHomeFailure(string reason)
+    {
+        if (currentState == VehicleState.Idle || !gameObject.activeInHierarchy)
+        {
+            ResetReturnHomeRetryState();
+            return false;
+        }
+
+        _returnHomeRouteFailures++;
+        if (_returnHomeRouteFailures < MaxReturnHomeRouteFailures)
+        {
+            return true;
+        }
+
+        Debug.LogWarning(
+            $"{GetVehicleDebugName()} could not return home after {_returnHomeRouteFailures} attempts ({reason}). Resetting vehicle and releasing factory pop assignment.");
+        ResetAtHomeAndRetryDispatch(null, null);
+        return false;
+    }
+
+    private void StopReturnHomeRetryWait()
+    {
+        _vehiclesWaitingForReturn.Remove(this);
+        _returnHomeRetryCoroutine = null;
+    }
+
+    private void ResetReturnHomeRetryState()
+    {
+        StopReturnHomeRetryWait();
+        _returnHomeRouteFailures = 0;
+    }
+
+    public void AssignPopDelivery(Building factory, int popCount)
+    {
+        if (_assignedPopFactory != null && _assignedPopFactory != factory)
+        {
+            ReleasePopDeliveryAssignment();
+        }
+
+        _assignedPopFactory = factory;
+        _assignedPopCount = Mathf.Max(0, popCount);
+        _assignedPopsDelivered = false;
+        _returnHomeRouteFailures = 0;
+    }
+
+    private void MarkPopDeliveryArrived()
+    {
+        if (_assignedPopFactory == null ||
+            _assignedPopsDelivered ||
+            _assignedPopCount <= 0 ||
+            targetBuilding != _assignedPopFactory)
+        {
+            return;
+        }
+
+        _assignedPopFactory.MarkIncomingPopsDelivered(this);
+        _assignedPopsDelivered = true;
+    }
+
+    private void ReleasePopDeliveryAssignment()
+    {
+        ResetReturnHomeRetryState();
+
+        if (_assignedPopFactory != null)
+        {
+            _assignedPopFactory.ReleasePopAssignment(this);
+        }
+
+        _assignedPopFactory = null;
+        _assignedPopCount = 0;
+        _assignedPopsDelivered = false;
+    }
+
+    private bool TryGetRoutePorts(
+        Building source,
+        Building destination,
+        Vector2Int destinationReferenceCell,
+        out Vector2Int exitPort,
+        out Vector2Int entryPort)
+    {
+        exitPort = default;
+        entryPort = default;
+        if (source == null || destination == null || _activeNetwork == null) return false;
+
+        if (!source.TryGetClosestPort(
+                PortFlowDirection.Exit,
+                _activeNetwork,
+                destinationReferenceCell,
+                vehicleData,
+                out exitPort))
+        {
+            return false;
+        }
+
+        return destination.TryGetClosestPort(
+            PortFlowDirection.Entry,
+            _activeNetwork,
+            exitPort,
+            vehicleData,
+            out entryPort);
     }
 
     private Vector3 GetWorldPositionOfPort(Vector2Int portCell)
@@ -520,5 +986,10 @@ public class VehicleAI : MonoBehaviour
     private string DescribeNetwork(RoadNetwork network)
     {
         return network != null ? network.id.ToString() : "null";
+    }
+
+    private string DescribeRoutePortFailure(Building source, Building destination)
+    {
+        return $"source={DescribeBuilding(source)}, destination={DescribeBuilding(destination)}, activeNetwork={DescribeNetwork(_activeNetwork)}";
     }
 }

@@ -47,10 +47,8 @@ public static class TrafficGraphValidator
             return false;
         }
 
-        bool needsEntry = desiredFlow == PortType.Entry ||
-                          desiredFlow == PortType.Both;
-        bool needsExit = desiredFlow == PortType.Exit ||
-                         desiredFlow == PortType.Both;
+        bool needsEntry = desiredFlow.AllowsFlow(PortFlowDirection.Entry);
+        bool needsExit = desiredFlow.AllowsFlow(PortFlowDirection.Exit);
         bool hasEntry = !needsEntry || candidate.ArrivalAnchors.Count > 0;
         bool hasExit = !needsExit || candidate.DepartureAnchors.Count > 0;
         if (!hasEntry || !hasExit) return false;
@@ -308,10 +306,8 @@ public static class TrafficGraphValidator
                 AddDuplicateId(diagnostics, graph.Version, port.Id.ToString(), port.PortCell);
             }
 
-            bool needsEntry = port.PortType == PortType.Entry ||
-                              port.PortType == PortType.Both;
-            bool needsExit = port.PortType == PortType.Exit ||
-                             port.PortType == PortType.Both;
+            bool needsEntry = port.PortType.AllowsFlow(PortFlowDirection.Entry);
+            bool needsExit = port.PortType.AllowsFlow(PortFlowDirection.Exit);
             bool disconnected =
                 port.ArrivalAnchors.Count == 0 &&
                 port.DepartureAnchors.Count == 0;
@@ -403,7 +399,8 @@ public static class TrafficGraphValidator
         {
             LaneRecord lane = graph.Lanes[i];
             if (outgoingByLane.Contains(lane.Id) ||
-                HasArrivalPortAt(graph, lane.EndAnchorCell))
+                HasArrivalPortAt(graph, lane.EndAnchorCell) ||
+                HasExplicitDeadEndBehavior(graph, lane))
             {
                 continue;
             }
@@ -459,6 +456,29 @@ public static class TrafficGraphValidator
         {
             BuildingPortAnchorRecord port = graph.BuildingPortAnchors[i];
             if (port.PortCell == cell && port.ArrivalAnchors.Count > 0) return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasExplicitDeadEndBehavior(
+        TrafficGraphSnapshot graph,
+        LaneRecord lane)
+    {
+        for (int i = 0; i < graph.MovementRejections.Count; i++)
+        {
+            MovementRejectionRecord rejection = graph.MovementRejections[i];
+            if (rejection.OwnerCell != lane.EndAnchorCell ||
+                rejection.SourceLaneId != lane.Id)
+            {
+                continue;
+            }
+
+            if (rejection.Reason == TrafficMovementRejectionReason.NoLegalOutgoingLane ||
+                rejection.Reason == TrafficMovementRejectionReason.UTurnNotAllowed)
+            {
+                return true;
+            }
         }
 
         return false;

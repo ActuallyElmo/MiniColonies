@@ -6,18 +6,6 @@ public sealed class ManagedTrafficGraphAdapterResult
 {
     public readonly List<TrafficNode> Nodes = new List<TrafficNode>();
     public readonly List<TrafficEdge> Edges = new List<TrafficEdge>();
-    public readonly Dictionary<Vector2Int, List<LaneEndpoint>> IncomingByCell =
-        new Dictionary<Vector2Int, List<LaneEndpoint>>();
-    public readonly Dictionary<Vector2Int, List<LaneEndpoint>> OutgoingByCell =
-        new Dictionary<Vector2Int, List<LaneEndpoint>>();
-    public readonly Dictionary<LaneSegmentId, TrafficEdge> EdgeByLaneSegmentId =
-        new Dictionary<LaneSegmentId, TrafficEdge>();
-    public readonly Dictionary<MovementId, TrafficEdge> EdgeByMovementId =
-        new Dictionary<MovementId, TrafficEdge>();
-    public readonly Dictionary<TrafficEdge, LaneSegmentId> LaneSegmentIdByEdge =
-        new Dictionary<TrafficEdge, LaneSegmentId>();
-    public readonly Dictionary<TrafficEdge, MovementId> MovementIdByEdge =
-        new Dictionary<TrafficEdge, MovementId>();
 }
 
 public static class ManagedTrafficGraphAdapter
@@ -95,13 +83,9 @@ public static class ManagedTrafficGraphAdapter
             start.outgoingEdges.Add(edge);
             edge.RecalculateLength();
             result.Edges.Add(edge);
-            result.EdgeByLaneSegmentId.Add(segment.Id, edge);
-            result.LaneSegmentIdByEdge.Add(edge, segment.Id);
             laneSegmentStartNodes.Add(segment.Id, start);
             laneSegmentEndNodes.Add(segment.Id, end);
         }
-
-        RegisterLaneEndpoints(graph, result, laneSegmentStartNodes, laneSegmentEndNodes);
 
         for (int i = 0; i < graph.Movements.Count; i++)
         {
@@ -164,8 +148,6 @@ public static class ManagedTrafficGraphAdapter
             start.outgoingEdges.Add(edge);
             edge.RecalculateLength();
             result.Edges.Add(edge);
-            result.EdgeByMovementId.Add(movement.Id, edge);
-            result.MovementIdByEdge.Add(edge, movement.Id);
         }
 
         return true;
@@ -194,105 +176,6 @@ public static class ManagedTrafficGraphAdapter
         return node;
     }
 
-    private static void RegisterLaneEndpoints(
-        TrafficGraphSnapshot graph,
-        ManagedTrafficGraphAdapterResult result,
-        Dictionary<LaneSegmentId, TrafficNode> starts,
-        Dictionary<LaneSegmentId, TrafficNode> ends)
-    {
-        for (int i = 0; i < graph.Lanes.Count; i++)
-        {
-            LaneRecord lane = graph.Lanes[i];
-            if (lane.TraversalSegmentIds.Count == 0) continue;
-
-            if (!TryGetFirstAndLastSegments(
-                    graph,
-                    lane,
-                    out LaneTraversalSegmentRecord first,
-                    out LaneTraversalSegmentRecord last))
-            {
-                continue;
-            }
-
-            if (starts.TryGetValue(first.Id, out TrafficNode start))
-            {
-                AddEndpoint(
-                    result.OutgoingByCell,
-                    lane.StartAnchorCell,
-                    start,
-                    lane,
-                    lane.EndAnchorCell,
-                    true);
-            }
-            if (ends.TryGetValue(last.Id, out TrafficNode end))
-            {
-                AddEndpoint(
-                    result.IncomingByCell,
-                    lane.EndAnchorCell,
-                    end,
-                    lane,
-                    lane.StartAnchorCell,
-                    false);
-            }
-        }
-    }
-
-    private static bool TryGetFirstAndLastSegments(
-        TrafficGraphSnapshot graph,
-        LaneRecord lane,
-        out LaneTraversalSegmentRecord first,
-        out LaneTraversalSegmentRecord last)
-    {
-        first = null;
-        last = null;
-        for (int i = 0; i < lane.TraversalSegmentIds.Count; i++)
-        {
-            if (!graph.TryGetLaneSegment(
-                    lane.TraversalSegmentIds[i],
-                    out LaneTraversalSegmentRecord segment))
-            {
-                continue;
-            }
-
-            if (first == null || segment.SegmentOrdinal < first.SegmentOrdinal)
-            {
-                first = segment;
-            }
-            if (last == null || segment.SegmentOrdinal > last.SegmentOrdinal)
-            {
-                last = segment;
-            }
-        }
-
-        return first != null && last != null;
-    }
-
-    private static void AddEndpoint(
-        Dictionary<Vector2Int, List<LaneEndpoint>> byCell,
-        Vector2Int cell,
-        TrafficNode node,
-        LaneRecord lane,
-        Vector2Int neighborCell,
-        bool outgoing)
-    {
-        if (!byCell.TryGetValue(cell, out List<LaneEndpoint> endpoints))
-        {
-            endpoints = new List<LaneEndpoint>();
-            byCell.Add(cell, endpoints);
-        }
-
-        endpoints.Add(new LaneEndpoint
-        {
-            Node = node,
-            LocalLaneIndex = lane.LaneOrdinal,
-            TotalLanes = lane.LaneCountInDirection,
-            Direction = DirectionVector(outgoing
-                ? lane.StartLegDirectionBit
-                : lane.EndLegDirectionBit),
-            NeighborCell = neighborCell
-        });
-    }
-
     private static TrafficEdgeKind ConvertMovementKind(TrafficMovementKind kind)
     {
         switch (kind)
@@ -318,14 +201,5 @@ public static class ManagedTrafficGraphAdapter
     {
         edge.waypoints.Clear();
         for (int i = 0; i < samples.Count; i++) edge.waypoints.Add(samples[i]);
-    }
-
-    private static Vector3 DirectionVector(int directionBit)
-    {
-        Vector2Int offset =
-            RoadGridDirectionUtility.GetNeighborPosition(
-                Vector2Int.zero,
-                directionBit);
-        return new Vector3(offset.x, 0f, offset.y).normalized;
     }
 }

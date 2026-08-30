@@ -16,18 +16,30 @@ public class SimulationTaskManager : MonoBehaviour
     [Tooltip("Maximum milliseconds allowed per frame for main-thread tasks.")]
     public float maxMillisecondsPerFrame = 5f;
 
-    private Queue<ISimulationTask> _taskQueue = new Queue<ISimulationTask>();
-    private Stopwatch _frameTimer = new Stopwatch();
-    private List<JobHandle> _activeJobHandles = new List<JobHandle>();
+    private readonly Queue<ISimulationTask> _taskQueue = new Queue<ISimulationTask>();
+    private readonly Stopwatch _frameTimer = new Stopwatch();
+    private readonly List<JobHandle> _activeJobHandles = new List<JobHandle>();
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
     public void EnqueueTask(ISimulationTask task)
     {
+        if (task == null)
+        {
+            UnityEngine.Debug.LogWarning(
+                "Cannot enqueue a null simulation task.");
+            return;
+        }
+
         _taskQueue.Enqueue(task);
     }
 
@@ -36,13 +48,18 @@ public class SimulationTaskManager : MonoBehaviour
         if (_taskQueue.Count == 0) return;
 
         _frameTimer.Restart();
+        float frameBudgetMilliseconds = Mathf.Max(
+            0.01f,
+            maxMillisecondsPerFrame);
 
-        // FIX: Use .Elapsed.TotalMilliseconds for decimal precision!
-        while (_taskQueue.Count > 0 && _frameTimer.Elapsed.TotalMilliseconds < maxMillisecondsPerFrame)
+        while (_taskQueue.Count > 0 &&
+               _frameTimer.Elapsed.TotalMilliseconds < frameBudgetMilliseconds)
         {
             ISimulationTask currentTask = _taskQueue.Peek();
             
-            bool isFinished = currentTask.Process(_frameTimer, maxMillisecondsPerFrame);
+            bool isFinished = currentTask.Process(
+                _frameTimer,
+                frameBudgetMilliseconds);
 
             if (isFinished) _taskQueue.Dequeue();
             else break; // Yields exactly when the decimal hits 5.0ms
@@ -70,12 +87,27 @@ public class SimulationTaskManager : MonoBehaviour
     {
         for (int i = _activeJobHandles.Count - 1; i >= 0; i--)
         {
-            if (_activeJobHandles[i].IsCompleted) _activeJobHandles.RemoveAt(i);
+            if (!_activeJobHandles[i].IsCompleted) continue;
+
+            _activeJobHandles[i].Complete();
+            _activeJobHandles.RemoveAt(i);
         }
     }
 
     private void OnDestroy()
     {
+        if (Instance != this) return;
+
         CompleteActiveJobs();
+        foreach (ISimulationTask task in _taskQueue)
+        {
+            if (task is System.IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+
+        _taskQueue.Clear();
+        Instance = null;
     }
 }

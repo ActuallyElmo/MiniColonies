@@ -12,10 +12,20 @@ public class BuildingPlacementInput : MonoBehaviour
     public Color validCellColor = new Color(0f, 1f, 0f, 0.5f); 
     public Color invalidCellColor = new Color(1f, 0f, 0f, 0.5f); 
 
-    [Header("Port Materials")]
-    public Material entryPortMaterial;
-    public Material exitPortMaterial;
-    public Material bothPortMaterial;
+    [Header("Port Icons")]
+    [Tooltip("Icon used by ports that accept population transport vehicles only.")]
+    public Sprite popVehiclePortSprite;
+    [Tooltip("Icon used by ports that accept resource transport vehicles only.")]
+    public Sprite resourceVehiclePortSprite;
+    [Tooltip("Icon used by ports that accept both population and resource transport vehicles.")]
+    public Sprite allVehiclesPortSprite;
+    [Tooltip("Vertical clearance above the building's highest renderer, measured in grid cells.")]
+    [Min(0f)] public float portIconHeightPaddingInCells = 0.1f;
+
+    [Header("Port Flow Colors")]
+    public Color entryPortColor = new Color(0.2f, 0.75f, 1f, 1f);
+    public Color exitPortColor = new Color(1f, 0.45f, 0.15f, 1f);
+    public Color bothPortColor = new Color(0.7f, 0.35f, 1f, 1f);
 
     // Preview State
     private GameObject _previewObj;
@@ -61,7 +71,7 @@ public class BuildingPlacementInput : MonoBehaviour
                              currentMode == PlayerMode.BuildRoad || 
                              currentMode == PlayerMode.UpgradeRoad || 
                              currentMode == PlayerMode.DemolishBuilding || 
-                             currentMode == PlayerMode.Delete;
+                             currentMode == PlayerMode.DeleteRoad;
             
             foreach (Building b in BuildingSystemBackend.Instance.GetActiveBuildings())
             {
@@ -149,22 +159,19 @@ public class BuildingPlacementInput : MonoBehaviour
         building.Initialize(data, origin, requiredLayer, footprint);
 
         // Render specific port indicators visually on the object
+        float portIconLocalHeight = GetPortIconLocalHeight(newObj.transform);
         foreach (BuildingTile tile in data.footprint)
         {
             if (tile.isPort)
             {
-                GameObject portIcon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                Destroy(portIcon.GetComponent<Collider>());
-                portIcon.transform.SetParent(newObj.transform);
-                
                 float lx = tile.localPosition.x * worldManager.cellSize;
                 float lz = tile.localPosition.y * worldManager.cellSize;
-                portIcon.transform.localPosition = new Vector3(lx, 0.2f, lz); 
-                portIcon.transform.localScale = new Vector3(worldManager.cellSize * 0.6f, worldManager.cellSize * 0.6f, worldManager.cellSize * 0.6f);
-
-                Material iconMat = tile.portType == PortType.Entry ? entryPortMaterial : 
-                                   (tile.portType == PortType.Exit ? exitPortMaterial : bothPortMaterial);
-                portIcon.GetComponent<MeshRenderer>().sharedMaterial = iconMat;
+                GameObject portIcon = CreatePortIcon(
+                    newObj.transform,
+                    tile.portType,
+                    lx,
+                    portIconLocalHeight,
+                    lz);
 
                 building.RegisterPortIcon(portIcon);
             }
@@ -229,16 +236,94 @@ public class BuildingPlacementInput : MonoBehaviour
 
             if (tile.isPort)
             {
-                GameObject portIcon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                Destroy(portIcon.GetComponent<Collider>());
-                portIcon.transform.SetParent(_previewObj.transform);
-                portIcon.transform.localScale = new Vector3(worldManager.cellSize * 0.6f, worldManager.cellSize * 0.6f, worldManager.cellSize * 0.6f);
-                portIcon.transform.localPosition = new Vector3(lx, 0.2f, lz); 
-
-                Material iconMat = tile.portType == PortType.Entry ? entryPortMaterial : 
-                                   (tile.portType == PortType.Exit ? exitPortMaterial : bothPortMaterial);
-                portIcon.GetComponent<MeshRenderer>().sharedMaterial = iconMat;
+                CreatePortIcon(_previewObj.transform, tile.portType, lx, 0.2f, lz);
             }
+        }
+    }
+
+    private float GetPortIconLocalHeight(Transform buildingRoot)
+    {
+        Renderer[] buildingRenderers = buildingRoot.GetComponentsInChildren<Renderer>();
+        float highestWorldY = float.NegativeInfinity;
+
+        foreach (Renderer buildingRenderer in buildingRenderers)
+        {
+            if (!buildingRenderer.enabled) continue;
+            highestWorldY = Mathf.Max(highestWorldY, buildingRenderer.bounds.max.y);
+        }
+
+        if (float.IsNegativeInfinity(highestWorldY)) return 0.2f;
+
+        float clearance = worldManager.cellSize * portIconHeightPaddingInCells;
+        Vector3 pointAboveBuilding = new Vector3(
+            buildingRoot.position.x,
+            highestWorldY + clearance,
+            buildingRoot.position.z);
+        return buildingRoot.InverseTransformPoint(pointAboveBuilding).y;
+    }
+
+    private GameObject CreatePortIcon(
+        Transform parent,
+        PortType portType,
+        float localX,
+        float localY,
+        float localZ)
+    {
+        GameObject portIcon = new GameObject($"PortIcon_{portType}");
+        portIcon.transform.SetParent(parent, false);
+        portIcon.transform.localPosition = new Vector3(localX, localY, localZ);
+        portIcon.transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
+
+        SpriteRenderer renderer = portIcon.AddComponent<SpriteRenderer>();
+        renderer.sprite = GetPortSprite(portType);
+        renderer.color = GetPortColor(portType);
+        renderer.sortingOrder = 10;
+
+        if (renderer.sprite != null)
+        {
+            Vector2 spriteSize = renderer.sprite.bounds.size;
+            float largestDimension = Mathf.Max(spriteSize.x, spriteSize.y);
+            if (largestDimension > 0f)
+            {
+                float scale = worldManager.cellSize * 0.6f / largestDimension;
+                portIcon.transform.localScale = new Vector3(scale, scale, 1f);
+            }
+        }
+
+        return portIcon;
+    }
+
+    private Sprite GetPortSprite(PortType portType)
+    {
+        switch (portType)
+        {
+            case PortType.PopEntry:
+            case PortType.PopExit:
+            case PortType.PopBoth:
+                return popVehiclePortSprite;
+            case PortType.ResourceEntry:
+            case PortType.ResourceExit:
+            case PortType.ResourceBoth:
+                return resourceVehiclePortSprite;
+            default:
+                return allVehiclesPortSprite;
+        }
+    }
+
+    private Color GetPortColor(PortType portType)
+    {
+        switch (portType)
+        {
+            case PortType.Entry:
+            case PortType.PopEntry:
+            case PortType.ResourceEntry:
+                return entryPortColor;
+            case PortType.Exit:
+            case PortType.PopExit:
+            case PortType.ResourceExit:
+                return exitPortColor;
+            default:
+                return bothPortColor;
         }
     }
 

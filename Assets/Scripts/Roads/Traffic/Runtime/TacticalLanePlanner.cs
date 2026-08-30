@@ -2,9 +2,7 @@ public enum TacticalLaneDecisionKind
 {
     KeepLane,
     PrepareRequiredMovement,
-    ForcedMerge,
-    WaitForReservation,
-    RequestStrategicReplan
+    ForcedMerge
 }
 
 public enum TacticalLaneDecisionReason
@@ -12,9 +10,7 @@ public enum TacticalLaneDecisionReason
     None,
     NoUpcomingMovement,
     RequiredControlledMovementAhead,
-    LaneDropAhead,
-    ReservationUnavailable,
-    NoFeasibleManeuver
+    LaneDropAhead
 }
 
 public readonly struct TacticalLaneDecision
@@ -38,8 +34,7 @@ public sealed class TacticalLanePlanner
 {
     public TacticalLaneDecision Decide(
         VehicleAI vehicle,
-        TrafficEdge nextRouteEdge,
-        float distanceToNextEdgeUnits)
+        TrafficEdge nextRouteEdge)
     {
         if (vehicle == null || nextRouteEdge == null)
         {

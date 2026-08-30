@@ -10,8 +10,8 @@ public class FreeForAllIntersectionController : IIntersectionController
     }
 
     private const float MovementPathClearance = 0.12f;
-    private const float ApproachBufferMinUnits = 0.65f;
-    private const float ApproachBufferVehicleLengthMultiplier = 3f;
+    private const float ApproachBufferMinUnits = 0.45f;
+    private const float ApproachBufferVehicleLengthMultiplier = 1.25f;
     private readonly Dictionary<VehicleAI, TrafficEdge> _activeMovements = new Dictionary<VehicleAI, TrafficEdge>();
     private readonly Dictionary<VehicleAI, ReservedMovement> _reservedMovements =
         new Dictionary<VehicleAI, ReservedMovement>();

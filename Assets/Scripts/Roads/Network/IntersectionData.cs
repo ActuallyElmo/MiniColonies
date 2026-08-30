@@ -56,12 +56,7 @@ public class IntersectionData
     // Custom Rules set by the player. If empty, the intersection relies on defaults.
     public List<LaneConnectionRule> CustomRules { get; } = new List<LaneConnectionRule>();
 
-    // We can also cache the generated default rules here if we want to visualize them
-    // without the player having explicitly set them.
-    public List<LaneConnectionRule> DefaultRules { get; } = new List<LaneConnectionRule>();
     public List<LaneConnectionRule> DisabledRules { get; } = new List<LaneConnectionRule>();
-
-    public int InvalidCustomRuleCount { get; set; }
 
     public int PriorityDirectionBitA
     {

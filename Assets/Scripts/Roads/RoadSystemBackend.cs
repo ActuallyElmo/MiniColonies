@@ -32,8 +32,27 @@ public class RoadCell
         inConnections &= ~directionBit;
     }
 
-    public void AddOutgoingConnection(int directionBit) { outConnections |= directionBit; }
-    public void AddIncomingConnection(int directionBit) { inConnections |= directionBit; }
+    public void SetOutgoingConnection(int directionBit, bool enabled)
+    {
+        if (enabled) outConnections |= directionBit;
+        else outConnections &= ~directionBit;
+    }
+
+    public void SetIncomingConnection(int directionBit, bool enabled)
+    {
+        if (enabled) inConnections |= directionBit;
+        else inConnections &= ~directionBit;
+    }
+
+    public void SetDirectionalConnection(
+        int directionBit,
+        bool canExit,
+        bool canEnter)
+    {
+        SetOutgoingConnection(directionBit, canExit);
+        SetIncomingConnection(directionBit, canEnter);
+    }
+
     public void SetRoadType(RoadType type) { roadType = type; }
     public void SetPreview(bool preview) { isPreview = preview; }
 
@@ -97,6 +116,11 @@ public class RoadSystemBackend : MonoBehaviour
     {
         if (Instance == null) Instance = this;
         else Destroy(gameObject);
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
     }
 
     private void Start()
@@ -186,7 +210,12 @@ public class RoadSystemBackend : MonoBehaviour
 
     public void PlaceRoadBlock(Vector2Int cell, RoadType type)
     {
-        if (type == null || _roads.ContainsKey(cell)) return;
+        if (type == null ||
+            _roads.ContainsKey(cell) ||
+            !CanPlaceRoadTypeAt(cell, type))
+        {
+            return;
+        }
 
         SaveSnapshot(cell); // SNAPSHOT
         
@@ -234,17 +263,40 @@ public class RoadSystemBackend : MonoBehaviour
 
     public void UpgradeRoadBlock(Vector2Int cell, RoadType newType)
     {
+        if (!CanUpgradeRoadBlock(cell, newType)) return;
+
         if (_roads.TryGetValue(cell, out RoadCell road))
         {
+            if (road.roadType == newType)
+            {
+                if (newType != null && newType.UsesOneWayTraffic)
+                {
+                    ReverseOneWayRoadEdge(cell, newType);
+                }
+
+                return;
+            }
+
             if (road.roadType != newType)
             {
                 SaveSnapshot(cell); // SNAPSHOT
                 road.SetRoadType(newType);
+                NormalizeCellTrafficDirections(road);
                 MarkCellDirty(cell);
                 UpdateIntersectionState(road);
                 MarkConnectedCellsDirtyForRoadTypeChange(road);
             }
         }
+    }
+
+    public bool CanUpgradeRoadBlock(Vector2Int cell, RoadType newType)
+    {
+        return newType != null &&
+               _roads.TryGetValue(cell, out RoadCell road) &&
+               road != null &&
+               road.roadType != null &&
+               road.roadType.IsWide == newType.IsWide &&
+               CanPlaceRoadTypeAt(cell, newType);
     }
 
     private void MarkConnectedCellsDirtyForRoadTypeChange(RoadCell road)
@@ -266,6 +318,13 @@ public class RoadSystemBackend : MonoBehaviour
 
     public void ConnectCellsSafe(Vector2Int from, Vector2Int to, RoadType selectedRoadType)
     {
+        if (selectedRoadType == null ||
+            !CanPlaceRoadTypeAt(from, selectedRoadType) ||
+            !CanPlaceRoadTypeAt(to, selectedRoadType))
+        {
+            return;
+        }
+
         SaveSnapshot(from); // SNAPSHOT
         SaveSnapshot(to);   // SNAPSHOT
 
@@ -281,37 +340,31 @@ public class RoadSystemBackend : MonoBehaviour
         toCell.AddConnection(toToFromBit);
         fromCell.AddConnection(fromToToBit);
 
-        bool isOneWay = !selectedRoadType.isTwoWay;
+        bool isOneWay = selectedRoadType != null && selectedRoadType.UsesOneWayTraffic;
 
         if (isOneWay)
         {
-            bool forward = true;
-            if (GetConnectionCount(fromCell) >= 1 && !fromCell.roadType.isTwoWay)
-            {
-                if (fromCell.inConnections == 0 && fromCell.outConnections > 0) forward = false;
-            }
+            SetTrafficDirectionForConnection(
+                fromCell,
+                fromToToBit,
+                true);
+            SetTrafficDirectionForConnection(
+                toCell,
+                toToFromBit,
+                false);
 
-            if (forward)
-            {
-                fromCell.AddOutgoingConnection(fromToToBit);
-                toCell.AddIncomingConnection(toToFromBit);
-                if (fromCell.roadType.isTwoWay) fromCell.AddIncomingConnection(fromToToBit);
-                if (toCell.roadType.isTwoWay) toCell.AddOutgoingConnection(toToFromBit);
-            }
-            else
-            {
-                fromCell.AddIncomingConnection(fromToToBit);
-                toCell.AddOutgoingConnection(toToFromBit);
-                if (fromCell.roadType.isTwoWay) fromCell.AddOutgoingConnection(fromToToBit);
-                if (toCell.roadType.isTwoWay) toCell.AddIncomingConnection(toToFromBit);
-            }
+            NormalizeOneWayRoadEdgeAfterConnection(from, to, selectedRoadType);
         }
         else
         {
-            fromCell.AddOutgoingConnection(fromToToBit);
-            fromCell.AddIncomingConnection(fromToToBit);
-            toCell.AddOutgoingConnection(toToFromBit);
-            toCell.AddIncomingConnection(toToFromBit);
+            SetTrafficDirectionForConnection(
+                fromCell,
+                fromToToBit,
+                true);
+            SetTrafficDirectionForConnection(
+                toCell,
+                toToFromBit,
+                false);
         }
 
         MarkCellDirty(from);
@@ -319,6 +372,467 @@ public class RoadSystemBackend : MonoBehaviour
 
         UpdateIntersectionState(fromCell);
         UpdateIntersectionState(toCell);
+    }
+
+    public bool CanPlaceRoadTypeAt(Vector2Int cell, RoadType roadType)
+    {
+        if (roadType == null) return false;
+
+        BuildingSystemBackend buildingSystem = BuildingSystemBackend.Instance;
+        if (buildingSystem == null) return true;
+        if (!buildingSystem.CanBuildRoadAt(cell)) return false;
+
+        return !buildingSystem.TryGetPortAt(cell, out _) ||
+               roadType.CanConnectToPort;
+    }
+
+    public bool TryGetOneWayRoadEdgeKey(
+        Vector2Int cell,
+        RoadType roadType,
+        out string key)
+    {
+        key = null;
+        if (!TryCollectOneWayRoadEdge(cell, roadType, out List<Vector2Int> edgeCells))
+        {
+            return false;
+        }
+
+        key = BuildRoadEdgeKey(edgeCells);
+        return true;
+    }
+
+    private bool ReverseOneWayRoadEdge(Vector2Int cell, RoadType roadType)
+    {
+        if (!TryCollectOneWayRoadEdge(cell, roadType, out List<Vector2Int> edgeCells))
+        {
+            return false;
+        }
+
+        for (int i = 0; i < edgeCells.Count; i++)
+        {
+            SaveSnapshot(edgeCells[i]);
+        }
+
+        for (int i = 0; i < edgeCells.Count - 1; i++)
+        {
+            RoadCell a = _roads[edgeCells[i]];
+            RoadCell b = _roads[edgeCells[i + 1]];
+            int aToBBit = GetDirectionBit(a.gridPosition, b.gridPosition);
+            int bToABit = GetDirectionBit(b.gridPosition, a.gridPosition);
+
+            bool aCanExit = (a.outConnections & aToBBit) != 0;
+            bool aCanEnter = (a.inConnections & aToBBit) != 0;
+            bool bCanExit = (b.outConnections & bToABit) != 0;
+            bool bCanEnter = (b.inConnections & bToABit) != 0;
+
+            a.SetDirectionalConnection(aToBBit, bCanExit, bCanEnter);
+            b.SetDirectionalConnection(bToABit, aCanExit, aCanEnter);
+        }
+
+        for (int i = 0; i < edgeCells.Count; i++)
+        {
+            RoadCell edgeCell = _roads[edgeCells[i]];
+            MarkCellDirty(edgeCell.gridPosition);
+            UpdateIntersectionState(edgeCell);
+        }
+
+        return true;
+    }
+
+    private bool TryCollectOneWayRoadEdge(
+        Vector2Int seed,
+        RoadType roadType,
+        out List<Vector2Int> edgeCells)
+    {
+        edgeCells = null;
+        if (roadType == null || roadType.UsesTwoWayTraffic) return false;
+        if (!_roads.TryGetValue(seed, out RoadCell seedCell) ||
+            seedCell.roadType != roadType)
+        {
+            return false;
+        }
+
+        List<int> candidateDirections = GetSameOneWayRoadDirections(seedCell, roadType);
+        if (candidateDirections.Count == 0) return false;
+
+        if (IsOneWayRoadEdgeBoundary(seedCell, roadType))
+        {
+            if (candidateDirections.Count != 1) return false;
+
+            edgeCells = TraceOneWayRoadEdgeFromBoundary(
+                seed,
+                candidateDirections[0],
+                roadType);
+            return edgeCells.Count >= 2;
+        }
+
+        if (candidateDirections.Count != 2) return false;
+
+        List<Vector2Int> firstHalf = TraceOneWayRoadEdgeFromBoundary(
+            seed,
+            candidateDirections[0],
+            roadType);
+        List<Vector2Int> secondHalf = TraceOneWayRoadEdgeFromBoundary(
+            seed,
+            candidateDirections[1],
+            roadType);
+
+        firstHalf.Reverse();
+        firstHalf.RemoveAt(firstHalf.Count - 1);
+        firstHalf.AddRange(secondHalf);
+        edgeCells = firstHalf;
+        return edgeCells.Count >= 2;
+    }
+
+    private bool TryCollectOneWayRoadEdgeThroughConnection(
+        Vector2Int a,
+        Vector2Int b,
+        RoadType roadType,
+        out List<Vector2Int> edgeCells)
+    {
+        edgeCells = null;
+        if (roadType == null || roadType.UsesTwoWayTraffic) return false;
+        if (!_roads.TryGetValue(a, out RoadCell aCell) ||
+            !_roads.TryGetValue(b, out RoadCell bCell) ||
+            aCell.roadType != roadType ||
+            bCell.roadType != roadType)
+        {
+            return false;
+        }
+
+        int aToBBit = GetDirectionBit(a, b);
+        int bToABit = GetDirectionBit(b, a);
+        if (!aCell.HasConnection(aToBBit) || !bCell.HasConnection(bToABit))
+        {
+            return false;
+        }
+
+        List<Vector2Int> left = TraceOneWayRoadEdgeSide(a, b, roadType);
+        List<Vector2Int> right = TraceOneWayRoadEdgeSide(b, a, roadType);
+        left.Reverse();
+        left.AddRange(right);
+        edgeCells = left;
+        return edgeCells.Count >= 2;
+    }
+
+    private List<Vector2Int> TraceOneWayRoadEdgeFromBoundary(
+        Vector2Int start,
+        int firstDirectionBit,
+        RoadType roadType)
+    {
+        var result = new List<Vector2Int> { start };
+        Vector2Int previous = start;
+        Vector2Int current = GetNeighborPosition(start, firstDirectionBit);
+        int safety = _roads.Count + 1;
+
+        while (safety-- > 0 &&
+               _roads.TryGetValue(current, out RoadCell currentCell) &&
+               currentCell.roadType == roadType)
+        {
+            result.Add(current);
+            if (IsOneWayRoadEdgeBoundary(currentCell, roadType)) break;
+
+            List<int> directions = GetSameOneWayRoadDirections(currentCell, roadType);
+            Vector2Int next = current;
+            for (int i = 0; i < directions.Count; i++)
+            {
+                Vector2Int candidate = GetNeighborPosition(current, directions[i]);
+                if (candidate != previous)
+                {
+                    next = candidate;
+                    break;
+                }
+            }
+
+            if (next == current) break;
+            previous = current;
+            current = next;
+        }
+
+        return result;
+    }
+
+    private List<Vector2Int> TraceOneWayRoadEdgeSide(
+        Vector2Int start,
+        Vector2Int blockedNeighbor,
+        RoadType roadType)
+    {
+        var result = new List<Vector2Int> { start };
+        Vector2Int previous = blockedNeighbor;
+        Vector2Int current = start;
+        int safety = _roads.Count + 1;
+
+        while (safety-- > 0 &&
+               _roads.TryGetValue(current, out RoadCell currentCell) &&
+               !IsOneWayRoadEdgeBoundary(currentCell, roadType))
+        {
+            List<int> directions = GetSameOneWayRoadDirections(currentCell, roadType);
+            Vector2Int next = current;
+            for (int i = 0; i < directions.Count; i++)
+            {
+                Vector2Int candidate = GetNeighborPosition(current, directions[i]);
+                if (candidate != previous)
+                {
+                    next = candidate;
+                    break;
+                }
+            }
+
+            if (next == current ||
+                !_roads.TryGetValue(next, out RoadCell nextCell) ||
+                nextCell.roadType != roadType)
+            {
+                break;
+            }
+
+            result.Add(next);
+            previous = current;
+            current = next;
+        }
+
+        return result;
+    }
+
+    private List<int> GetSameOneWayRoadDirections(RoadCell cell, RoadType roadType)
+    {
+        var directions = new List<int>();
+        for (int i = 0; i < 8; i++)
+        {
+            int bit = 1 << i;
+            if (!cell.HasConnection(bit)) continue;
+
+            Vector2Int neighborPos = GetNeighborPosition(cell.gridPosition, bit);
+            if (_roads.TryGetValue(neighborPos, out RoadCell neighbor) &&
+                neighbor.roadType == roadType &&
+                neighbor.roadType != null &&
+                neighbor.roadType.UsesOneWayTraffic)
+            {
+                directions.Add(bit);
+            }
+        }
+
+        directions.Sort();
+        return directions;
+    }
+
+    private bool IsOneWayRoadEdgeBoundary(RoadCell cell, RoadType roadType)
+    {
+        if (cell == null || roadType == null) return true;
+        if (GetConnectionCount(cell) != 2) return true;
+        return GetSameOneWayRoadDirections(cell, roadType).Count != 2;
+    }
+
+    private string BuildRoadEdgeKey(IReadOnlyList<Vector2Int> edgeCells)
+    {
+        if (edgeCells == null || edgeCells.Count == 0) return string.Empty;
+
+        Vector2Int start = edgeCells[0];
+        Vector2Int end = edgeCells[edgeCells.Count - 1];
+        if (CompareCells(start, end) > 0)
+        {
+            Vector2Int temporary = start;
+            start = end;
+            end = temporary;
+        }
+
+        return $"{start.x},{start.y}|{end.x},{end.y}";
+    }
+
+    private int CompareCells(Vector2Int left, Vector2Int right)
+    {
+        int x = left.x.CompareTo(right.x);
+        return x != 0 ? x : left.y.CompareTo(right.y);
+    }
+
+    private void SetTrafficDirectionForConnection(
+        RoadCell cell,
+        int directionBit,
+        bool followsPlacementDirection)
+    {
+        if (cell == null || cell.roadType == null) return;
+
+        if (cell.roadType.UsesTwoWayTraffic)
+        {
+            cell.SetDirectionalConnection(directionBit, true, true);
+            return;
+        }
+
+        cell.SetDirectionalConnection(
+            directionBit,
+            followsPlacementDirection,
+            !followsPlacementDirection);
+    }
+
+    private void NormalizeOneWayRoadEdgeAfterConnection(
+        Vector2Int from,
+        Vector2Int to,
+        RoadType roadType)
+    {
+        if (!TryCollectOneWayRoadEdgeThroughConnection(
+                from,
+                to,
+                roadType,
+                out List<Vector2Int> edgeCells))
+        {
+            return;
+        }
+
+        bool forward = TryChooseExistingEdgeDirection(
+            edgeCells,
+            from,
+            to,
+            out bool anchoredForward)
+            ? anchoredForward
+            : IsConnectionForwardInEdge(edgeCells, from, to);
+
+        for (int i = 0; i < edgeCells.Count; i++)
+        {
+            SaveSnapshot(edgeCells[i]);
+        }
+
+        ApplyOneWayRoadEdgeDirection(edgeCells, forward);
+    }
+
+    private bool TryChooseExistingEdgeDirection(
+        IReadOnlyList<Vector2Int> edgeCells,
+        Vector2Int from,
+        Vector2Int to,
+        out bool forward)
+    {
+        forward = false;
+        int anchorCellIndex = GetPreferredExistingAnchorIndex(edgeCells, from, to);
+        bool hasVote = false;
+        bool votedForward = false;
+        int bestDistance = int.MaxValue;
+
+        for (int i = 0; i < edgeCells.Count - 1; i++)
+        {
+            RoadCell a = _roads[edgeCells[i]];
+            RoadCell b = _roads[edgeCells[i + 1]];
+            if (a.isPreview || b.isPreview) continue;
+            if (!TryGetPairFlowDirection(a, b, out bool pairForward)) continue;
+
+            int distance = anchorCellIndex >= 0
+                ? Mathf.Min(
+                    Mathf.Abs(anchorCellIndex - i),
+                    Mathf.Abs(anchorCellIndex - (i + 1)))
+                : 0;
+            if (hasVote && distance >= bestDistance) continue;
+
+            hasVote = true;
+            votedForward = pairForward;
+            bestDistance = distance;
+        }
+
+        if (!hasVote) return false;
+
+        forward = votedForward;
+        return true;
+    }
+
+    private int GetPreferredExistingAnchorIndex(
+        IReadOnlyList<Vector2Int> edgeCells,
+        Vector2Int from,
+        Vector2Int to)
+    {
+        bool fromIsPreview = _roads.TryGetValue(from, out RoadCell fromCell) && fromCell.isPreview;
+        bool toIsPreview = _roads.TryGetValue(to, out RoadCell toCell) && toCell.isPreview;
+
+        if (fromIsPreview && !toIsPreview) return IndexOfCell(edgeCells, to);
+        if (!fromIsPreview && toIsPreview) return IndexOfCell(edgeCells, from);
+        return -1;
+    }
+
+    private int IndexOfCell(IReadOnlyList<Vector2Int> edgeCells, Vector2Int cell)
+    {
+        for (int i = 0; i < edgeCells.Count; i++)
+        {
+            if (edgeCells[i] == cell) return i;
+        }
+
+        return -1;
+    }
+
+    private bool TryGetPairFlowDirection(
+        RoadCell a,
+        RoadCell b,
+        out bool forward)
+    {
+        forward = false;
+        int aToBBit = GetDirectionBit(a.gridPosition, b.gridPosition);
+        int bToABit = GetDirectionBit(b.gridPosition, a.gridPosition);
+        bool canTravelForward =
+            (a.outConnections & aToBBit) != 0 &&
+            (b.inConnections & bToABit) != 0;
+        bool canTravelBackward =
+            (b.outConnections & bToABit) != 0 &&
+            (a.inConnections & aToBBit) != 0;
+
+        if (canTravelForward == canTravelBackward) return false;
+
+        forward = canTravelForward;
+        return true;
+    }
+
+    private bool IsConnectionForwardInEdge(
+        IReadOnlyList<Vector2Int> edgeCells,
+        Vector2Int from,
+        Vector2Int to)
+    {
+        for (int i = 0; i < edgeCells.Count - 1; i++)
+        {
+            if (edgeCells[i] == from && edgeCells[i + 1] == to) return true;
+            if (edgeCells[i] == to && edgeCells[i + 1] == from) return false;
+        }
+
+        return true;
+    }
+
+    private void ApplyOneWayRoadEdgeDirection(
+        IReadOnlyList<Vector2Int> edgeCells,
+        bool forward)
+    {
+        for (int i = 0; i < edgeCells.Count - 1; i++)
+        {
+            RoadCell a = _roads[edgeCells[i]];
+            RoadCell b = _roads[edgeCells[i + 1]];
+            int aToBBit = GetDirectionBit(a.gridPosition, b.gridPosition);
+            int bToABit = GetDirectionBit(b.gridPosition, a.gridPosition);
+
+            a.SetDirectionalConnection(aToBBit, forward, !forward);
+            b.SetDirectionalConnection(bToABit, !forward, forward);
+        }
+
+        for (int i = 0; i < edgeCells.Count; i++)
+        {
+            RoadCell edgeCell = _roads[edgeCells[i]];
+            MarkCellDirty(edgeCell.gridPosition);
+            UpdateIntersectionState(edgeCell);
+        }
+    }
+
+    private void NormalizeCellTrafficDirections(RoadCell cell)
+    {
+        if (cell == null || cell.roadType == null) return;
+
+        for (int i = 0; i < 8; i++)
+        {
+            int bit = 1 << i;
+            if (!cell.HasConnection(bit)) continue;
+
+            if (cell.roadType.UsesTwoWayTraffic)
+            {
+                cell.SetDirectionalConnection(bit, true, true);
+                continue;
+            }
+
+            bool canExit = (cell.outConnections & bit) != 0;
+            bool canEnter = (cell.inConnections & bit) != 0;
+            if (canExit == canEnter)
+            {
+                cell.SetDirectionalConnection(bit, true, false);
+            }
+        }
     }
 
     private void UpdateIntersectionState(RoadCell cell)
@@ -415,7 +929,6 @@ public class RoadSystemBackend : MonoBehaviour
         if (data == null) return false;
 
         data.ClearCustomRules();
-        data.InvalidCustomRuleCount = 0;
         return true;
     }
 
@@ -455,6 +968,11 @@ public class RoadSystemBackend : MonoBehaviour
 
         if (connectionCount == 2)
         {
+            if (IsSharpWideRoadTurn(cell))
+            {
+                return RoadNodeKind.Intersection;
+            }
+
             for (int i = 0; i < 8; i++)
             {
                 int bit = 1 << i;
@@ -476,7 +994,7 @@ public class RoadSystemBackend : MonoBehaviour
         if (!_roads.TryGetValue(neighborPos, out RoadCell neighbor)) return false;
 
         int neighborConnectionCount = GetConnectionCount(neighbor);
-        if (neighborConnectionCount >= 3)
+        if (neighborConnectionCount >= 3 || IsSharpWideRoadTurn(neighbor))
         {
             return false;
         }
@@ -509,15 +1027,59 @@ public class RoadSystemBackend : MonoBehaviour
                 cell.gridPosition.y < neighborPos.y);
     }
 
+    private bool IsSharpWideRoadTurn(RoadCell cell)
+    {
+        if (cell == null ||
+            cell.roadType == null ||
+            !cell.roadType.IsWide ||
+            GetConnectionCount(cell) != 2)
+        {
+            return false;
+        }
+
+        int firstDirectionBit = 0;
+        int secondDirectionBit = 0;
+        for (int i = 0; i < 8; i++)
+        {
+            int bit = 1 << i;
+            if (!cell.HasConnection(bit)) continue;
+
+            if (firstDirectionBit == 0) firstDirectionBit = bit;
+            else
+            {
+                secondDirectionBit = bit;
+                break;
+            }
+        }
+
+        Vector2 firstDirection = (Vector2)GetNeighborPosition(
+            Vector2Int.zero,
+            firstDirectionBit);
+        Vector2 secondDirection = (Vector2)GetNeighborPosition(
+            Vector2Int.zero,
+            secondDirectionBit);
+        if (firstDirection.sqrMagnitude <= 0f ||
+            secondDirection.sqrMagnitude <= 0f)
+        {
+            return false;
+        }
+
+        // Outward leg angles of 90 degrees or less are sharp. Treating these
+        // as intersections gives them the larger cap and connector geometry.
+        return Vector2.Dot(
+                   firstDirection.normalized,
+                   secondDirection.normalized) >= -0.0001f;
+    }
+
     private int GetLaneCount(RoadType roadType)
     {
         if (roadType == null) return 0;
-        return roadType.isTwoWay ? roadType.lanesPerWay * 2 : roadType.lanesPerWay;
+        return roadType.UsesTwoWayTraffic ? roadType.lanesPerWay * 2 : roadType.lanesPerWay;
     }
 
     private bool IsTwoWay(RoadType roadType)
     {
-        return roadType != null && roadType.isTwoWay;
+        return roadType != null && roadType.UsesTwoWayTraffic;
     }
 
     public int GetDirectionBit(Vector2Int from, Vector2Int to)

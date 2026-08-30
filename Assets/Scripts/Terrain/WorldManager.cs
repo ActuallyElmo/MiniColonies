@@ -74,10 +74,31 @@ public class WorldManager : MonoBehaviour
     private Stopwatch _genTimer = new Stopwatch();
 
     public static WorldManager Instance { get; private set; }
+
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance != this) return;
+
+        if (_gridDataTexture != null)
+        {
+            if (Application.isPlaying) Destroy(_gridDataTexture);
+            else DestroyImmediate(_gridDataTexture);
+            _gridDataTexture = null;
+        }
+
+        Shader.SetGlobalTexture("_GridDataTex", null);
+        Instance = null;
     }
 
     private void Start()
@@ -613,13 +634,16 @@ public class WorldManager : MonoBehaviour
                 Gizmos.color = gridColor;
                 Gizmos.DrawWireCube(centerPos, new Vector3(cellSize, 0, cellSize));
 
-                string labelText = isTransition ? "T" : cellLayer.ToString();
-                GUIStyle style = new GUIStyle();
-                style.alignment = TextAnchor.MiddleCenter;
-                style.fontStyle = FontStyle.Bold;
-                style.normal.textColor = isTransition ? new Color(1f, 0.4f, 0.4f) : new Color(0.4f, 1f, 0.4f);
+                if (Event.current != null && GUI.skin != null)
+                {
+                    string labelText = isTransition ? "T" : cellLayer.ToString();
+                    GUIStyle style = new GUIStyle(GUI.skin.label);
+                    style.alignment = TextAnchor.MiddleCenter;
+                    style.fontStyle = FontStyle.Bold;
+                    style.normal.textColor = isTransition ? new Color(1f, 0.4f, 0.4f) : new Color(0.4f, 1f, 0.4f);
 
-                UnityEditor.Handles.Label(centerPos, labelText, style);
+                    UnityEditor.Handles.Label(centerPos, labelText, style);
+                }
             }
         }
     }

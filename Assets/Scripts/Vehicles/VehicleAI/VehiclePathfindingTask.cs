@@ -6,14 +6,13 @@ using Unity.Collections;
 using Unity.Jobs;
 using Unity.Mathematics;
 
-public class VehiclePathfindingTask : ISimulationTask
+public class VehiclePathfindingTask : ISimulationTask, IDisposable
 {
     private enum TaskState { Init, Wait, Complete }
     private TaskState _state = TaskState.Init;
 
     private VehicleAI _requester;
     private Vector3 _targetPos;
-    private Action<Queue<Vector3>> _onComplete;
     private Action<TrafficRoute> _onRouteComplete;
     private bool _snapStartToClosestEdgeEndpoint;
     private Vector2Int _startPortCell;
@@ -43,8 +42,7 @@ public class VehiclePathfindingTask : ISimulationTask
     public VehiclePathfindingTask(
         VehicleAI requester,
         Vector3 target,
-        Action<Queue<Vector3>> onComplete,
-        Action<TrafficRoute> onRouteComplete = null,
+        Action<TrafficRoute> onRouteComplete,
         bool snapStartToClosestEdgeEndpoint = false,
         Vector2Int startPortCell = default,
         bool hasStartPortCell = false,
@@ -55,7 +53,6 @@ public class VehiclePathfindingTask : ISimulationTask
     {
         _requester = requester;
         _targetPos = target;
-        _onComplete = onComplete;
         _onRouteComplete = onRouteComplete;
         _snapStartToClosestEdgeEndpoint = snapStartToClosestEdgeEndpoint;
         _startPortCell = startPortCell;
@@ -116,9 +113,8 @@ public class VehiclePathfindingTask : ISimulationTask
                     "The vehicle traffic profile is invalid.");
             }
 
-            // CRITICAL FIX: Fetch the starting position dynamically AT THE EXACT MOMENT the task executes.
-            // Because this task sat in the queue while the traffic graph generated, the vehicle 
-            // kept driving. Capturing this now ensures we don't use a stale, out-of-bounds position!
+            // Resolve the origin when the queued task starts so a moving vehicle does
+            // not pathfind from the position it occupied when the request was created.
             Vector3 dynamicStartPos = _requester.GetPathingOrigin();
             _resolvedStartPos = dynamicStartPos;
 
@@ -243,17 +239,10 @@ public class VehiclePathfindingTask : ISimulationTask
                     "The immutable traffic graph changed while the route was being calculated.");
             }
 
-            Queue<Vector3> finalPath = null;
             TrafficRoute finalRoute = null;
             if (_resultWaypoints.Length > 0)
             {
-                finalPath = new Queue<Vector3>(_resultWaypoints.Length);
-                for (int i = 0; i < _resultWaypoints.Length; i++)
-                {
-                    finalPath.Enqueue(_resultWaypoints[i]);
-                }
-
-                finalRoute = BuildTrafficRoute(finalPath);
+                finalRoute = BuildTrafficRoute();
             }
 
             DisposeNativeResults();
@@ -267,7 +256,6 @@ public class VehiclePathfindingTask : ISimulationTask
 
             if (_requester != null && _requester.gameObject.activeInHierarchy)
             {
-                _onComplete?.Invoke(finalPath);
                 _onRouteComplete?.Invoke(finalRoute);
             }
 
@@ -277,11 +265,10 @@ public class VehiclePathfindingTask : ISimulationTask
         return false;
     }
 
-    private TrafficRoute BuildTrafficRoute(Queue<Vector3> finalPath)
+    private TrafficRoute BuildTrafficRoute()
     {
         TrafficRoute route = new TrafficRoute
         {
-            DebugWaypoints = new Queue<Vector3>(finalPath),
             Corridor = new RouteCorridor
             {
                 GraphVersion = _graphVersion,
@@ -383,8 +370,10 @@ public class VehiclePathfindingTask : ISimulationTask
             FailureReason = failureReason,
             Message = message ?? string.Empty
         });
-        _onComplete?.Invoke(null);
-        _onRouteComplete?.Invoke(route);
+        if (_requester != null && _requester.gameObject.activeInHierarchy)
+        {
+            _onRouteComplete?.Invoke(route);
+        }
         return true;
     }
 
@@ -395,6 +384,18 @@ public class VehiclePathfindingTask : ISimulationTask
         if (_resultWaypoints.IsCreated) _resultWaypoints.Dispose();
         if (_resultEdgeIndices.IsCreated) _resultEdgeIndices.Dispose();
         if (_congestionPenalties.IsCreated) _congestionPenalties.Dispose();
+    }
+
+    public void Dispose()
+    {
+        if (_state != TaskState.Init)
+        {
+            _jobHandle.Complete();
+        }
+
+        DisposeNativeResults();
+        _onRouteComplete = null;
+        _requester = null;
     }
 
     private bool TryFindPortAnchor(
@@ -410,6 +411,10 @@ public class VehiclePathfindingTask : ISimulationTask
             BuildingPortAnchorRecord candidate =
                 _trafficGraph.BuildingPortAnchors[i];
             if (candidate.PortCell != portCell) continue;
+            PortFlowDirection flowDirection = departure
+                ? PortFlowDirection.Exit
+                : PortFlowDirection.Entry;
+            if (!candidate.PortType.AllowsVehicleFlow(flowDirection, _requester.vehicleData)) continue;
             if (departure && candidate.DepartureAnchors.Count == 0) continue;
             if (!departure && candidate.ArrivalAnchors.Count == 0) continue;
             anchor = candidate;

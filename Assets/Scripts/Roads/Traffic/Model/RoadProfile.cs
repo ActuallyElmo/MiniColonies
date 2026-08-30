@@ -55,6 +55,7 @@ public sealed class RoadProfile
     public VehicleCapabilityMask AllowedCapabilities { get; }
     public float RoadWidthUnits { get; }
     public float CurbWidthUnits { get; }
+    public bool IsWide { get; }
     public RoadMovementPolicyMask SupportedMovements { get; }
 
     public int TotalLaneCount => ForwardLaneCount + ReverseLaneCount;
@@ -71,6 +72,7 @@ public sealed class RoadProfile
         VehicleCapabilityMask allowedCapabilities,
         float roadWidthUnits,
         float curbWidthUnits,
+        bool isWide,
         RoadMovementPolicyMask supportedMovements)
     {
         Id = id;
@@ -84,6 +86,7 @@ public sealed class RoadProfile
         AllowedCapabilities = allowedCapabilities;
         RoadWidthUnits = roadWidthUnits;
         CurbWidthUnits = curbWidthUnits;
+        IsWide = isWide;
         SupportedMovements = supportedMovements;
     }
 
@@ -197,12 +200,13 @@ public sealed class RoadProfile
         }
 
         bool hasPersistentKey = !string.IsNullOrWhiteSpace(sourceAsset.trafficProfileKey);
+        bool effectiveIsTwoWay = sourceAsset.UsesTwoWayTraffic;
         string sourceKey = ResolveSourceKey(
             sourceAsset.trafficProfileKey,
             sourceAsset.roadName,
             sourceAsset.name,
             FormattableString.Invariant(
-                $"ROAD:{sourceAsset.lanesPerWay}:{sourceAsset.isTwoWay}:{sourceAsset.speedLimit:R}:{sourceAsset.roadWidth:R}:{sourceAsset.curbWidth:R}:{(int)sourceAsset.allowedTrafficPermissions}:{(int)sourceAsset.allowedVehicleCapabilities}:{(int)sourceAsset.supportedTrafficMovements}"));
+                $"ROAD:{sourceAsset.lanesPerWay}:{effectiveIsTwoWay}:{sourceAsset.speedLimit:R}:{sourceAsset.roadWidth:R}:{sourceAsset.curbWidth:R}:{(int)sourceAsset.allowedTrafficPermissions}:{(int)sourceAsset.allowedVehicleCapabilities}:{(int)sourceAsset.supportedTrafficMovements}{(sourceAsset.IsWide ? ":WIDE" : string.Empty)}"));
         TrafficDiagnosticSource source = TrafficDiagnosticSource.ForProfile(sourceKey);
         if (!hasPersistentKey)
         {
@@ -212,48 +216,38 @@ public sealed class RoadProfile
                 source);
         }
 
-        RoadPermissionMask allowedPermissions = sourceAsset.allowedTrafficPermissions;
-        if (allowedPermissions == RoadPermissionMask.None)
-        {
-            diagnostics.AddWarning(
-                TrafficDiagnosticCode.CompatibilityDefaultApplied,
-                $"{nameof(sourceAsset.allowedTrafficPermissions)} used compatibility default {RoadPermissionMask.All}.",
-                source);
-            allowedPermissions = RoadPermissionMask.All;
-        }
-
-        VehicleCapabilityMask allowedCapabilities = sourceAsset.allowedVehicleCapabilities;
-        if (allowedCapabilities == VehicleCapabilityMask.None)
-        {
-            diagnostics.AddWarning(
-                TrafficDiagnosticCode.CompatibilityDefaultApplied,
-                $"{nameof(sourceAsset.allowedVehicleCapabilities)} used compatibility default {VehicleCapabilityMask.All}.",
-                source);
-            allowedCapabilities = VehicleCapabilityMask.All;
-        }
-
-        RoadMovementPolicyMask supportedMovements = sourceAsset.supportedTrafficMovements;
-        if (supportedMovements == RoadMovementPolicyMask.None)
-        {
-            diagnostics.AddWarning(
-                TrafficDiagnosticCode.CompatibilityDefaultApplied,
-                $"{nameof(sourceAsset.supportedTrafficMovements)} used compatibility default {RoadMovementPolicyMask.All}.",
-                source);
-            supportedMovements = RoadMovementPolicyMask.All;
-        }
+        RoadPermissionMask allowedPermissions = NormalizeRoadPermissionMask(
+            sourceAsset.allowedTrafficPermissions,
+            RoadPermissionMask.All,
+            nameof(sourceAsset.allowedTrafficPermissions),
+            diagnostics,
+            source);
+        VehicleCapabilityMask allowedCapabilities = NormalizeVehicleCapabilityMask(
+            sourceAsset.allowedVehicleCapabilities,
+            VehicleCapabilityMask.All,
+            nameof(sourceAsset.allowedVehicleCapabilities),
+            diagnostics,
+            source);
+        RoadMovementPolicyMask supportedMovements = NormalizeRoadMovementPolicyMask(
+            sourceAsset.supportedTrafficMovements,
+            RoadMovementPolicyMask.All,
+            nameof(sourceAsset.supportedTrafficMovements),
+            diagnostics,
+            source);
 
         profile = new RoadProfile(
             RoadProfileId.FromStableKey(sourceKey),
             sourceKey,
             sourceAsset.lanesPerWay,
-            sourceAsset.isTwoWay ? sourceAsset.lanesPerWay : 0,
-            sourceAsset.isTwoWay ? RoadFlowDirectionality.TwoWay : RoadFlowDirectionality.OneWay,
+            effectiveIsTwoWay ? sourceAsset.lanesPerWay : 0,
+            effectiveIsTwoWay ? RoadFlowDirectionality.TwoWay : RoadFlowDirectionality.OneWay,
             LaneOrderingConvention.InsideToOutside,
             sourceAsset.speedLimit,
             allowedPermissions,
             allowedCapabilities,
             sourceAsset.roadWidth,
             sourceAsset.curbWidth,
+            sourceAsset.IsWide,
             supportedMovements);
 
         return profile.Validate(diagnostics);
@@ -270,6 +264,93 @@ public sealed class RoadProfile
         if (!string.IsNullOrWhiteSpace(displayName)) return displayName.Trim();
         if (!string.IsNullOrWhiteSpace(assetName)) return assetName.Trim();
         return string.Empty;
+    }
+
+    internal static RoadPermissionMask NormalizeRoadPermissionMask(
+        RoadPermissionMask value,
+        RoadPermissionMask fallback,
+        string fieldName,
+        TrafficDiagnosticCollection diagnostics,
+        TrafficDiagnosticSource source)
+    {
+        RoadPermissionMask knownValue = value & RoadPermissionMask.All;
+        if (value == RoadPermissionMask.None || knownValue == RoadPermissionMask.None)
+        {
+            diagnostics.AddWarning(
+                TrafficDiagnosticCode.CompatibilityDefaultApplied,
+                $"{fieldName} used compatibility default {fallback}.",
+                source);
+            return fallback;
+        }
+
+        if ((value & ~RoadPermissionMask.All) != 0)
+        {
+            diagnostics.AddWarning(
+                TrafficDiagnosticCode.CompatibilityDefaultApplied,
+                $"{fieldName} contained unknown permission bits and was normalized to {knownValue}.",
+                source);
+            return knownValue;
+        }
+
+        return value;
+    }
+
+    internal static VehicleCapabilityMask NormalizeVehicleCapabilityMask(
+        VehicleCapabilityMask value,
+        VehicleCapabilityMask fallback,
+        string fieldName,
+        TrafficDiagnosticCollection diagnostics,
+        TrafficDiagnosticSource source)
+    {
+        VehicleCapabilityMask knownValue = value & VehicleCapabilityMask.All;
+        if (value == VehicleCapabilityMask.None || knownValue == VehicleCapabilityMask.None)
+        {
+            diagnostics.AddWarning(
+                TrafficDiagnosticCode.CompatibilityDefaultApplied,
+                $"{fieldName} used compatibility default {fallback}.",
+                source);
+            return fallback;
+        }
+
+        if ((value & ~VehicleCapabilityMask.All) != 0)
+        {
+            diagnostics.AddWarning(
+                TrafficDiagnosticCode.CompatibilityDefaultApplied,
+                $"{fieldName} contained unknown capability bits and was normalized to {knownValue}.",
+                source);
+            return knownValue;
+        }
+
+        return value;
+    }
+
+    private static RoadMovementPolicyMask NormalizeRoadMovementPolicyMask(
+        RoadMovementPolicyMask value,
+        RoadMovementPolicyMask fallback,
+        string fieldName,
+        TrafficDiagnosticCollection diagnostics,
+        TrafficDiagnosticSource source)
+    {
+        RoadMovementPolicyMask knownValue = value & RoadMovementPolicyMask.All;
+        if (value == RoadMovementPolicyMask.None || knownValue == RoadMovementPolicyMask.None)
+        {
+            diagnostics.AddWarning(
+                TrafficDiagnosticCode.CompatibilityDefaultApplied,
+                $"{fieldName} used compatibility default {fallback}.",
+                source);
+            return fallback;
+        }
+
+        if ((value & ~RoadMovementPolicyMask.All) != 0)
+        {
+            diagnostics.AddWarning(
+                TrafficDiagnosticCode.CompatibilityDefaultApplied,
+                $"{fieldName} contained unknown movement policy bits and was normalized to {knownValue}.",
+                source);
+            return knownValue;
+        }
+
+        return value;
     }
 
     private static bool HasErrorsSince(

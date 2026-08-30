@@ -24,6 +24,7 @@ public sealed class TrafficSpatialIndex
     private readonly List<TrafficEdge> _candidateEdges = new List<TrafficEdge>();
     private readonly HashSet<TrafficEdge> _candidateSet = new HashSet<TrafficEdge>();
     private readonly List<EdgeDistance> _distances = new List<EdgeDistance>();
+    private readonly List<TrafficEdge> _singleResult = new List<TrafficEdge>(1);
     private float _bucketSize = 1f;
 
     public bool IsBuilt { get; private set; }
@@ -76,6 +77,7 @@ public sealed class TrafficSpatialIndex
         _candidateEdges.Clear();
         _candidateSet.Clear();
         _distances.Clear();
+        _singleResult.Clear();
         IndexedLaneCount = 0;
         IndexedSegmentCount = 0;
         LastCandidateSegmentCount = 0;
@@ -100,8 +102,8 @@ public sealed class TrafficSpatialIndex
 
     public TrafficEdge QueryClosestLane(Vector3 worldPoint, float searchRadius)
     {
-        QueryClosestLanes(worldPoint, searchRadius, 1, _candidateEdges);
-        return _candidateEdges.Count > 0 ? _candidateEdges[0] : null;
+        QueryClosestLanes(worldPoint, searchRadius, 1, _singleResult);
+        return _singleResult.Count > 0 ? _singleResult[0] : null;
     }
 
     public void QueryClosestLanes(
@@ -112,6 +114,8 @@ public sealed class TrafficSpatialIndex
     {
         if (results == null) return;
         results.Clear();
+        LastCandidateSegmentCount = 0;
+        LastDistanceTestCount = 0;
         if (!IsBuilt || maxResults <= 0 || searchRadius < 0f) return;
 
         _candidateEdges.Clear();

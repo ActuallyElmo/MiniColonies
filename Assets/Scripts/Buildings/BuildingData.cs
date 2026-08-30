@@ -1,7 +1,75 @@
 using System.Collections.Generic;
 using UnityEngine;
 
-public enum PortType { None, Entry, Exit, Both }
+public enum PortFlowDirection { Entry, Exit }
+
+public enum PortType
+{
+    None = 0,
+    [InspectorName("All Vehicles Entry")] Entry = 1,
+    [InspectorName("All Vehicles Exit")] Exit = 2,
+    [InspectorName("All Vehicles Both")] Both = 3,
+    [InspectorName("Pop Transport Entry")] PopEntry = 4,
+    [InspectorName("Pop Transport Exit")] PopExit = 5,
+    [InspectorName("Pop Transport Both")] PopBoth = 6,
+    [InspectorName("Resource Transport Entry")] ResourceEntry = 7,
+    [InspectorName("Resource Transport Exit")] ResourceExit = 8,
+    [InspectorName("Resource Transport Both")] ResourceBoth = 9
+}
+
+public static class PortTypeUtility
+{
+    public static bool AllowsFlow(this PortType portType, PortFlowDirection flowDirection)
+    {
+        switch (flowDirection)
+        {
+            case PortFlowDirection.Entry:
+                return portType == PortType.Entry ||
+                       portType == PortType.Both ||
+                       portType == PortType.PopEntry ||
+                       portType == PortType.PopBoth ||
+                       portType == PortType.ResourceEntry ||
+                       portType == PortType.ResourceBoth;
+            case PortFlowDirection.Exit:
+                return portType == PortType.Exit ||
+                       portType == PortType.Both ||
+                       portType == PortType.PopExit ||
+                       portType == PortType.PopBoth ||
+                       portType == PortType.ResourceExit ||
+                       portType == PortType.ResourceBoth;
+            default:
+                return false;
+        }
+    }
+
+    public static bool AllowsVehicle(this PortType portType, VehicleData vehicleData)
+    {
+        if (portType == PortType.None) return false;
+
+        bool isPopPort =
+            portType == PortType.PopEntry ||
+            portType == PortType.PopExit ||
+            portType == PortType.PopBoth;
+        bool isResourcePort =
+            portType == PortType.ResourceEntry ||
+            portType == PortType.ResourceExit ||
+            portType == PortType.ResourceBoth;
+
+        if (!isPopPort && !isResourcePort) return true;
+        if (vehicleData is PopTransportVehicleData) return isPopPort;
+        if (vehicleData is ResourceTransportVehicleData) return isResourcePort;
+        return false;
+    }
+
+    public static bool AllowsVehicleFlow(
+        this PortType portType,
+        PortFlowDirection flowDirection,
+        VehicleData vehicleData)
+    {
+        return portType.AllowsFlow(flowDirection) &&
+               portType.AllowsVehicle(vehicleData);
+    }
+}
 
 [System.Serializable]
 public class BuildingTile

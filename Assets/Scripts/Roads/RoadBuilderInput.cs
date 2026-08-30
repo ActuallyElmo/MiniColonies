@@ -3,12 +3,26 @@ using UnityEngine.EventSystems;
 
 public class RoadBuilderInput : MonoBehaviour
 {
+    public static RoadBuilderInput Instance { get; private set; }
+
     [Tooltip("How close to the center (0.0 to 0.5) the mouse must be to place a road.")]
     public float centerSnapThreshold = 0.35f;
 
     private bool _isDragging = false;
     private bool _madeChangesDuringDrag = false; // Tracks if a commit is needed
     private Vector2Int _lastDragCell;
+    private readonly System.Collections.Generic.HashSet<string> _reversedOneWayEdgesThisDrag =
+        new System.Collections.Generic.HashSet<string>();
+
+    private void Awake()
+    {
+        Instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
+    }
 
     private void Update()
     {
@@ -21,10 +35,11 @@ public class RoadBuilderInput : MonoBehaviour
 
         PlayerMode currentMode = PlayerActionManager.Instance.currentMode;
 
-        if (currentMode != PlayerMode.BuildRoad && currentMode != PlayerMode.Delete && currentMode != PlayerMode.UpgradeRoad) 
+        if (currentMode != PlayerMode.BuildRoad && currentMode != PlayerMode.DeleteRoad && currentMode != PlayerMode.UpgradeRoad)
         {
             _isDragging = false;
             _madeChangesDuringDrag = false;
+            _reversedOneWayEdgesThisDrag.Clear();
             return;
         }
 
@@ -34,10 +49,26 @@ public class RoadBuilderInput : MonoBehaviour
             if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) return;
 
             Vector2Int? cell = GetCellUnderMouse(out Vector3 hitPoint);
-            
+
             if (cell.HasValue && IsCloseToCenter(cell.Value, hitPoint))
             {
+                if (currentMode == PlayerMode.BuildRoad &&
+                    !IsValidPlacement(cell.Value))
+                {
+                    return;
+                }
+
+
+                if (currentMode == PlayerMode.UpgradeRoad &&
+                    !RoadSystemBackend.Instance.CanUpgradeRoadBlock(
+                        cell.Value,
+                        PlayerActionManager.Instance.SelectedRoadType))
+                {
+                    return;
+                }
+
                 RoadSystemBackend.Instance.BeginPreview(); // OPEN TRANSACTION
+                _reversedOneWayEdgesThisDrag.Clear();
                 
                 _isDragging = true;
                 _lastDragCell = cell.Value;
@@ -49,15 +80,6 @@ public class RoadBuilderInput : MonoBehaviour
         // 2. Handle Dragging
         if (_isDragging)
         {
-            // --- NEW: RIGHT CLICK TO CANCEL ---
-            if (Input.GetMouseButtonDown(1)) 
-            {
-                RoadSystemBackend.Instance.CancelPreview(); // ROLLBACK TRANSACTION
-                _isDragging = false;
-                _madeChangesDuringDrag = false;
-                return;
-            }
-
             Vector2Int? currentCell = GetCellUnderMouse(out Vector3 hitPoint);
             
             if (currentCell.HasValue && currentCell.Value != _lastDragCell)
@@ -78,9 +100,17 @@ public class RoadBuilderInput : MonoBehaviour
                 {
                     if (IsCloseToCenter(currentCell.Value, hitPoint))
                     {
-                        ProcessActionAtCell(currentCell.Value, currentMode);
+                        bool canProcess = currentMode != PlayerMode.UpgradeRoad ||
+                            RoadSystemBackend.Instance.CanUpgradeRoadBlock(
+                                currentCell.Value,
+                                PlayerActionManager.Instance.SelectedRoadType);
+                        if (canProcess)
+                        {
+                            ProcessActionAtCell(currentCell.Value, currentMode);
+                            _madeChangesDuringDrag = true;
+                        }
+
                         _lastDragCell = currentCell.Value;
-                        _madeChangesDuringDrag = true; 
                     }
                 }
             }
@@ -101,7 +131,27 @@ public class RoadBuilderInput : MonoBehaviour
 
             _isDragging = false;
             _madeChangesDuringDrag = false;
+            _reversedOneWayEdgesThisDrag.Clear();
         }
+    }
+
+    /// <summary>
+    /// Cancels the active road preview without leaving the currently selected road mode.
+    /// Returns true when this road tool consumed the cancellation request.
+    /// </summary>
+    public bool TryCancelActivePlacement()
+    {
+        if (!_isDragging) return false;
+
+        if (RoadSystemBackend.Instance != null)
+        {
+            RoadSystemBackend.Instance.CancelPreview();
+        }
+
+        _isDragging = false;
+        _madeChangesDuringDrag = false;
+        _reversedOneWayEdgesThisDrag.Clear();
+        return true;
     }
 
     private void ProcessActionAtCell(Vector2Int cell, PlayerMode mode)
@@ -115,15 +165,48 @@ public class RoadBuilderInput : MonoBehaviour
                     RoadSystemBackend.Instance.PlaceRoadBlock(cell, selectedType);
                 break;
 
-            case PlayerMode.Delete:
+            case PlayerMode.DeleteRoad:
                 RoadSystemBackend.Instance.RemoveRoadBlock(cell);
                 break;
 
             case PlayerMode.UpgradeRoad:
-                if (selectedType != null)
+                if (selectedType != null &&
+                    RoadSystemBackend.Instance.CanUpgradeRoadBlock(
+                        cell,
+                        selectedType))
+                {
+                    if (ShouldSkipRepeatedOneWayEdgeReverse(cell, selectedType))
+                    {
+                        break;
+                    }
+
                     RoadSystemBackend.Instance.UpgradeRoadBlock(cell, selectedType);
+                }
                 break;
         }
+    }
+
+    private bool ShouldSkipRepeatedOneWayEdgeReverse(Vector2Int cell, RoadType selectedType)
+    {
+        if (selectedType == null || selectedType.UsesTwoWayTraffic) return false;
+        if (!RoadSystemBackend.Instance.Roads.TryGetValue(cell, out RoadCell road) ||
+            road.roadType != selectedType)
+        {
+            return false;
+        }
+
+        if (!RoadSystemBackend.Instance.TryGetOneWayRoadEdgeKey(
+                cell,
+                selectedType,
+                out string edgeKey))
+        {
+            return false;
+        }
+
+        if (_reversedOneWayEdgesThisDrag.Contains(edgeKey)) return true;
+
+        _reversedOneWayEdgesThisDrag.Add(edgeKey);
+        return false;
     }
 
     // --- VALIDATION & RAYCASTING ---
@@ -169,9 +252,16 @@ public class RoadBuilderInput : MonoBehaviour
         if (WorldManager.Instance.IsExtrusionCell(cell.x, cell.y)) return false;
         if (!WorldManager.Instance.IsBuildableCell(cell.x, cell.y)) return false;
 
-        if (BuildingSystemBackend.Instance != null && BuildingSystemBackend.Instance.IsCellOccupied(cell))
+        RoadType selectedType =
+            PlayerActionManager.Instance != null
+                ? PlayerActionManager.Instance.SelectedRoadType
+                : null;
+        if (RoadSystemBackend.Instance == null ||
+            !RoadSystemBackend.Instance.CanPlaceRoadTypeAt(
+                cell,
+                selectedType))
         {
-            if (!BuildingSystemBackend.Instance.TryGetPortAt(cell, out PortType portType)) return false; 
+            return false;
         }
 
         return true; 
@@ -179,7 +269,7 @@ public class RoadBuilderInput : MonoBehaviour
 
     private bool CanConnect(Vector2Int from, Vector2Int to)
     {
-        if (!WorldManager.Instance.IsBuildableCell(from.x, from.y) || !WorldManager.Instance.IsBuildableCell(to.x, to.y)) return false;
+        if (!IsValidPlacement(from) || !IsValidPlacement(to)) return false;
         
         bool fromIsTransition = WorldManager.Instance.IsTransition(from.x, from.y);
         bool toIsTransition = WorldManager.Instance.IsTransition(to.x, to.y);

@@ -7,7 +7,6 @@ public sealed class TrafficOccupantRecord
     public TrafficEdge Edge;
     public float DistanceUnits;
     public float SpeedUnitsPerSecond;
-    public int Sequence;
 }
 
 public sealed class TrafficRuntimeState
@@ -16,7 +15,6 @@ public sealed class TrafficRuntimeState
         _occupantsByVehicle = new Dictionary<VehicleSimulationId, TrafficOccupantRecord>();
     private readonly Dictionary<TrafficEdge, List<TrafficOccupantRecord>>
         _occupantsByEdge = new Dictionary<TrafficEdge, List<TrafficOccupantRecord>>();
-    private int _nextSequence;
 
     public bool Register(
         VehicleAI vehicle,
@@ -33,8 +31,7 @@ public sealed class TrafficRuntimeState
             Vehicle = vehicle,
             Edge = edge,
             DistanceUnits = distanceUnits,
-            SpeedUnitsPerSecond = vehicle.conveyorCurrentSpeed,
-            Sequence = _nextSequence++
+            SpeedUnitsPerSecond = vehicle.conveyorCurrentSpeed
         };
         _occupantsByVehicle[id] = record;
         GetOrCreateEdgeList(edge).Add(record);
@@ -122,25 +119,6 @@ public sealed class TrafficRuntimeState
             TrafficOccupantRecord candidate = list[i];
             if (candidate.Vehicle == null || candidate.Vehicle == vehicle) continue;
             if (candidate.DistanceUnits > distance) return candidate.Vehicle;
-        }
-
-        return null;
-    }
-
-    public VehicleAI GetVehicleBehind(VehicleAI vehicle, TrafficEdge edge)
-    {
-        if (vehicle == null || edge == null ||
-            !_occupantsByEdge.TryGetValue(edge, out List<TrafficOccupantRecord> list))
-        {
-            return null;
-        }
-
-        float distance = vehicle.conveyorDistanceOnEdge;
-        for (int i = 0; i < list.Count; i++)
-        {
-            TrafficOccupantRecord candidate = list[i];
-            if (candidate.Vehicle == null || candidate.Vehicle == vehicle) continue;
-            if (candidate.DistanceUnits < distance) return candidate.Vehicle;
         }
 
         return null;

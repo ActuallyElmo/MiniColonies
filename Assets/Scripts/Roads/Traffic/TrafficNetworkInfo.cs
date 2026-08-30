@@ -35,16 +35,6 @@ public enum TrafficTurnType
     Right
 }
 
-// Structure needed for intersection routing connections
-public class LaneEndpoint
-{
-    public TrafficNode Node;
-    public int LocalLaneIndex;       
-    public int TotalLanes;           
-    public Vector3 Direction;
-    public Vector2Int NeighborCell;
-}
-
 // A distinct point in space where a vehicle can be.
 public class TrafficNode
 {

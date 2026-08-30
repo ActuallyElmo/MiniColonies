@@ -57,7 +57,7 @@ public class NativeTrafficGraph : MonoBehaviour
     public NativeArray<NativeTrafficNode> Nodes;
     public NativeArray<NativeTrafficEdge> Edges;
     public NativeArray<float3> Waypoints;
-    public NativeArray<int> NodeOutConnections; // Moved to the top for visibility!
+    public NativeArray<int> NodeOutConnections;
 
     // Fast lookups for the Main Thread to map objects to Native indices
     public Dictionary<TrafficNode, int> NodeToIndex = new Dictionary<TrafficNode, int>();
@@ -69,13 +69,19 @@ public class NativeTrafficGraph : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
     private void OnDestroy()
     {
         DisposeGraph();
+        if (Instance == this) Instance = null;
     }
 
     public void DisposeGraph()
@@ -87,7 +93,6 @@ public class NativeTrafficGraph : MonoBehaviour
         if (Edges.IsCreated) Edges.Dispose();
         if (Waypoints.IsCreated) Waypoints.Dispose();
         
-        // FIXED: The memory leak was happening because this was missing during OnDestroy
         if (NodeOutConnections.IsCreated) NodeOutConnections.Dispose();
         
         NodeToIndex.Clear();

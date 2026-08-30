@@ -25,6 +25,15 @@ public class ChunkRenderer : MonoBehaviour
         GetComponent<MeshFilter>().sharedMesh = _mesh;
     }
 
+    private void OnDestroy()
+    {
+        if (_mesh == null) return;
+
+        if (Application.isPlaying) Destroy(_mesh);
+        else DestroyImmediate(_mesh);
+        _mesh = null;
+    }
+
     public void GenerateMesh()
     {
         List<Vector3> vertices = new List<Vector3>();

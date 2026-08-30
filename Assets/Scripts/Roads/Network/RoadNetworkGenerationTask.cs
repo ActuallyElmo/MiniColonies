@@ -171,8 +171,8 @@ public class RoadNetworkGenerationTask : ISimulationTask
                         if (!_hasEntry.ContainsKey(net)) _hasEntry[net] = false;
                         if (!_hasExit.ContainsKey(net)) _hasExit[net] = false;
 
-                        if (type == PortType.Entry || type == PortType.Both) _hasEntry[net] = true;
-                        if (type == PortType.Exit || type == PortType.Both) _hasExit[net] = true;
+                        if (type.AllowsFlow(PortFlowDirection.Entry)) _hasEntry[net] = true;
+                        if (type.AllowsFlow(PortFlowDirection.Exit)) _hasExit[net] = true;
                     }
                 }
 

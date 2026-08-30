@@ -125,9 +125,9 @@ internal sealed class LaneSegmentDraft
 
 internal static class TrafficGraphCompilerStages
 {
-    private const float NodePullback = 0.35f;
     private const float IntersectionStopLinePaddingUnits = 0.05f;
-    private const float MaximumNodePullback = 0.85f;
+    private const float MaximumNodePullback = 0.95f;
+    private const float MinimumBoundarySeparationUnits = 0.15f;
     private const int MovementCurveSamples = 12;
     private const int LaneCenterlineSmoothingIterations = 3;
     private const float LaneChangeLengthUnits = 0.8f;
@@ -449,6 +449,9 @@ internal static class TrafficGraphCompilerStages
     public static void BuildMovementGeometry(
         TrafficGraphCompilationContext context)
     {
+        BuildLaneSegments(context);
+        AssignMovementLaneSegments(context);
+
         for (int i = 0; i < context.Movements.Count; i++)
         {
             MovementDraft movement = context.Movements[i];
@@ -456,14 +459,11 @@ internal static class TrafficGraphCompilerStages
                 $"MOVEMENT_GEOMETRY:{movement.Id.Value:X16}";
             movement.GeometryId = TrafficGeometryId.FromStableKey(geometryKey);
 
-            List<Vector3> samples = BuildMovementCurve(
-                movement);
+            List<Vector3> samples = BuildMovementCurve(movement);
             context.Geometry.Add(
                 new TrafficGeometryRecord(movement.GeometryId, samples));
         }
 
-        BuildLaneSegments(context);
-        AssignMovementLaneSegments(context);
         context.ControlledNodes.AddRange(BuildControlledNodes(context));
         context.MovementOwners.AddRange(BuildMovementOwners(context));
         context.PortAnchors.AddRange(BuildPortAnchors(context));
@@ -640,32 +640,66 @@ internal static class TrafficGraphCompilerStages
             section.Centerline.Add(context.Cells[path[i]].Source.WorldCenter);
         }
 
-        if (section.Centerline.Count >= 2 &&
-            IsBoundary(context.Cells[section.StartCell]))
+        bool pullStart = section.Centerline.Count >= 2 &&
+                         IsBoundary(context.Cells[section.StartCell]);
+        bool pullEnd = section.Centerline.Count >= 2 &&
+                       IsBoundary(context.Cells[section.EndCell]);
+        float startPullbackUnits = 0f;
+        float endPullbackUnits = 0f;
+        if (pullStart)
         {
-            section.Centerline[0] = PullBoundaryPoint(
+            startPullbackUnits = GetBoundaryPullbackUnits(
                 context,
                 context.Cells[section.StartCell],
+                section.StartLegDirectionBit,
                 section.Centerline[0],
                 section.Centerline[1],
                 profile);
         }
 
         int last = section.Centerline.Count - 1;
-        if (section.Centerline.Count >= 2 &&
-            IsBoundary(context.Cells[section.EndCell]))
+        if (pullEnd)
         {
-            section.Centerline[last] = PullBoundaryPoint(
+            endPullbackUnits = GetBoundaryPullbackUnits(
                 context,
                 context.Cells[section.EndCell],
+                section.EndLegDirectionBit,
                 section.Centerline[last],
                 section.Centerline[last - 1],
                 profile);
         }
 
+        ClampOpposingBoundaryPullbacks(
+            section.Centerline,
+            ref startPullbackUnits,
+            ref endPullbackUnits);
+        if (pullStart)
+        {
+            section.Centerline[0] = MoveAlongSegment(
+                section.Centerline[0],
+                section.Centerline[1],
+                startPullbackUnits);
+        }
+
+        if (pullEnd)
+        {
+            section.Centerline[last] = MoveAlongSegment(
+                section.Centerline[last],
+                section.Centerline[last - 1],
+                endPullbackUnits);
+        }
+
+        bool usesStandardNodeSmoothing =
+            UsesStandardNodeGeometry(context.Cells[section.StartCell]) ||
+            UsesStandardNodeGeometry(context.Cells[section.EndCell]);
+        bool useWideSmoothing =
+            profile.IsWide && !usesStandardNodeSmoothing;
         ApplyChaikinInPlace(
             section.Centerline,
-            LaneCenterlineSmoothingIterations);
+            RoadGeometryRules.GetSmoothingIterations(
+                LaneCenterlineSmoothingIterations,
+                useWideSmoothing),
+            RoadGeometryRules.GetCornerCutRatio(useWideSmoothing));
 
         section.CenterlineGeometryId = TrafficGeometryId.FromStableKey(
             $"SECTION_CENTERLINE:{section.Id.Value:X16}");
@@ -676,17 +710,47 @@ internal static class TrafficGraphCompilerStages
         context.Sections.Add(section);
     }
 
-    private static Vector3 PullBoundaryPoint(
+    private static float GetBoundaryPullbackUnits(
         TrafficGraphCompilationContext context,
         NormalizedRoadCell boundaryCell,
+        int boundaryLegDirectionBit,
         Vector3 boundaryPoint,
         Vector3 inwardPoint,
         RoadProfile sectionProfile)
     {
         float segmentLength = Vector3.Distance(boundaryPoint, inwardPoint);
-        if (segmentLength <= 0.0001f) return boundaryPoint;
+        if (segmentLength <= 0.0001f) return 0f;
 
-        float pullbackUnits = NodePullback * segmentLength;
+        // Road-end lanes terminate at the center of their final tile. Pulling
+        // them inward makes building-port arrivals stop early and departures
+        // appear at the road-facing edge of the tile instead of at the port.
+        if (boundaryCell != null &&
+            boundaryCell.NodeKind == RoadNodeKind.RoadEnd)
+        {
+            return 0f;
+        }
+
+        bool usesStandardNodeGeometry =
+            boundaryCell != null &&
+            (boundaryCell.NodeKind == RoadNodeKind.Intersection ||
+             boundaryCell.NodeKind == RoadNodeKind.Transition);
+        bool isWide =
+            !usesStandardNodeGeometry &&
+            sectionProfile != null &&
+            sectionProfile.IsWide;
+        if (boundaryCell != null &&
+            !usesStandardNodeGeometry &&
+            context != null &&
+            context.Source.TryGetRoadProfile(
+                boundaryCell.Source.RoadProfileId,
+                out RoadProfile boundaryProfile))
+        {
+            isWide |= boundaryProfile.IsWide;
+        }
+
+        float nodePullbackFraction =
+            RoadGeometryRules.GetNodePullbackFraction(isWide);
+        float pullbackUnits = nodePullbackFraction * segmentLength;
         if (boundaryCell != null &&
             boundaryCell.NodeKind == RoadNodeKind.Intersection)
         {
@@ -695,19 +759,64 @@ internal static class TrafficGraphCompilerStages
                 GetIntersectionStopLinePullbackUnits(
                     context,
                     boundaryCell,
+                    boundaryLegDirectionBit,
                     sectionProfile));
         }
 
-        float t = Mathf.Clamp(
-            pullbackUnits / segmentLength,
-            NodePullback,
-            MaximumNodePullback);
-        return Vector3.Lerp(boundaryPoint, inwardPoint, t);
+        return Mathf.Clamp(
+            pullbackUnits,
+            nodePullbackFraction * segmentLength,
+            MaximumNodePullback * segmentLength);
+    }
+
+    private static bool UsesStandardNodeGeometry(NormalizedRoadCell cell) =>
+        cell != null &&
+        (cell.NodeKind == RoadNodeKind.Intersection ||
+         cell.NodeKind == RoadNodeKind.Transition);
+
+    private static void ClampOpposingBoundaryPullbacks(
+        IReadOnlyList<Vector3> centerline,
+        ref float startPullbackUnits,
+        ref float endPullbackUnits)
+    {
+        float totalLength = CalculatePolylineLength(centerline);
+        if (totalLength <= 0.0001f) return;
+
+        float maxCombinedPullback = Mathf.Max(
+            0f,
+            totalLength - Mathf.Min(
+                MinimumBoundarySeparationUnits,
+                totalLength * 0.5f));
+        float combinedPullback = startPullbackUnits + endPullbackUnits;
+        if (combinedPullback <= maxCombinedPullback ||
+            combinedPullback <= 0.0001f)
+        {
+            return;
+        }
+
+        float scale = maxCombinedPullback / combinedPullback;
+        startPullbackUnits *= scale;
+        endPullbackUnits *= scale;
+    }
+
+    private static Vector3 MoveAlongSegment(
+        Vector3 boundaryPoint,
+        Vector3 inwardPoint,
+        float distanceUnits)
+    {
+        float segmentLength = Vector3.Distance(boundaryPoint, inwardPoint);
+        if (segmentLength <= 0.0001f) return boundaryPoint;
+
+        return Vector3.Lerp(
+            boundaryPoint,
+            inwardPoint,
+            Mathf.Clamp01(distanceUnits / segmentLength));
     }
 
     private static float GetIntersectionStopLinePullbackUnits(
         TrafficGraphCompilationContext context,
         NormalizedRoadCell intersectionCell,
+        int boundaryLegDirectionBit,
         RoadProfile sectionProfile)
     {
         float maxRoadWidth = sectionProfile != null
@@ -756,8 +865,103 @@ internal static class TrafficGraphCompilerStages
             }
         }
 
-        return (maxRoadWidth + maxCurbWidth) * 0.5f +
+        float geometryEnvelopePullback =
+            RoadGeometryRules.GetIntersectionGeometryOuterDiameter(
+                maxRoadWidth,
+                maxCurbWidth) * 0.5f;
+        float footprintPullback =
+            GetProjectedIntersectionFootprintPullbackUnits(
+                context,
+                intersectionCell,
+                boundaryLegDirectionBit,
+                sectionProfile);
+        return Mathf.Max(geometryEnvelopePullback, footprintPullback) +
                IntersectionStopLinePaddingUnits;
+    }
+
+    private static float GetProjectedIntersectionFootprintPullbackUnits(
+        TrafficGraphCompilationContext context,
+        NormalizedRoadCell intersectionCell,
+        int directionBit,
+        RoadProfile sectionProfile)
+    {
+        if (context == null ||
+            intersectionCell == null ||
+            sectionProfile == null)
+        {
+            return 0f;
+        }
+
+        Vector2 approach = DirectionVector(directionBit);
+        if (approach.sqrMagnitude <= 0.0001f) return 0f;
+
+        Vector2 approachNormal = Perpendicular(approach);
+        float laneEnvelopeHalfWidth = sectionProfile.RoadWidthUnits * 0.5f;
+        float requiredPullback = 0f;
+
+        for (int i = 0; i < intersectionCell.LegDirectionBits.Count; i++)
+        {
+            int otherDirectionBit = intersectionCell.LegDirectionBits[i];
+            if (otherDirectionBit == directionBit ||
+                otherDirectionBit == OppositeDirectionBit(directionBit))
+            {
+                continue;
+            }
+
+            Vector2 otherDirection = DirectionVector(otherDirectionBit);
+            if (otherDirection.sqrMagnitude <= 0.0001f) continue;
+
+            Vector2 otherNormal = Perpendicular(otherDirection);
+            float approachAcrossOtherRoad =
+                Mathf.Abs(Vector2.Dot(approach, otherNormal));
+            if (approachAcrossOtherRoad <= 0.0001f) continue;
+
+            float otherHalfWidth =
+                GetConnectedLegHalfWidth(
+                    context,
+                    intersectionCell,
+                    otherDirectionBit);
+            float laneSpreadAcrossOtherRoad =
+                laneEnvelopeHalfWidth *
+                Mathf.Abs(Vector2.Dot(approachNormal, otherNormal));
+            float pullback =
+                (otherHalfWidth + laneSpreadAcrossOtherRoad) /
+                approachAcrossOtherRoad;
+            requiredPullback = Mathf.Max(requiredPullback, pullback);
+        }
+
+        return requiredPullback;
+    }
+
+    private static float GetConnectedLegHalfWidth(
+        TrafficGraphCompilationContext context,
+        NormalizedRoadCell intersectionCell,
+        int directionBit)
+    {
+        RoadProfile profile = null;
+        Vector2Int neighbor =
+            RoadGridDirectionUtility.GetNeighborPosition(
+                intersectionCell.Source.GridPosition,
+                directionBit);
+        if (context.Cells.TryGetValue(
+                neighbor,
+                out NormalizedRoadCell neighborCell))
+        {
+            context.Source.TryGetRoadProfile(
+                neighborCell.Source.RoadProfileId,
+                out profile);
+        }
+
+        if (profile == null)
+        {
+            context.Source.TryGetRoadProfile(
+                intersectionCell.Source.RoadProfileId,
+                out profile);
+        }
+
+        return profile != null
+            ? (profile.RoadWidthUnits + profile.CurbWidthUnits) * 0.5f
+            : 0f;
     }
 
     private static void AccumulateProfileWidth(
@@ -1129,6 +1333,11 @@ internal static class TrafficGraphCompilerStages
                     i);
             }
 
+            RejectUnmappedIncomingLanes(
+                context,
+                cell,
+                incoming,
+                TrafficMovementKind.Intersection);
             return;
         }
 
@@ -1187,6 +1396,12 @@ internal static class TrafficGraphCompilerStages
                 }
             }
         }
+
+        RejectUnmappedIncomingLanes(
+            context,
+            cell,
+            incoming,
+            TrafficMovementKind.Intersection);
     }
 
     private static void AddMovement(
@@ -1547,6 +1762,54 @@ internal static class TrafficGraphCompilerStages
                 reason));
     }
 
+    private static void RejectUnmappedIncomingLanes(
+        TrafficGraphCompilationContext context,
+        Vector2Int ownerCell,
+        IReadOnlyList<LaneDraft> incoming,
+        TrafficMovementKind kind)
+    {
+        if (incoming == null) return;
+
+        for (int i = 0; i < incoming.Count; i++)
+        {
+            LaneDraft lane = incoming[i];
+            if (lane == null || lane.OutgoingMovementIds.Count > 0) continue;
+            if (HasTerminalRejection(context, ownerCell, lane, kind)) continue;
+
+            Reject(
+                context,
+                ownerCell,
+                lane,
+                null,
+                kind,
+                TrafficMovementRejectionReason.NoLegalOutgoingLane);
+        }
+    }
+
+    private static bool HasTerminalRejection(
+        TrafficGraphCompilationContext context,
+        Vector2Int ownerCell,
+        LaneDraft lane,
+        TrafficMovementKind kind)
+    {
+        if (context == null || lane == null) return false;
+
+        for (int i = 0; i < context.Rejections.Count; i++)
+        {
+            MovementRejectionRecord rejection = context.Rejections[i];
+            if (rejection.OwnerCell == ownerCell &&
+                rejection.SourceLaneId == lane.Id &&
+                rejection.AttemptedKind == kind &&
+                (rejection.Reason == TrafficMovementRejectionReason.NoLegalOutgoingLane ||
+                 rejection.Reason == TrafficMovementRejectionReason.UTurnNotAllowed))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static List<ControlledNodeRecord> BuildControlledNodes(
         TrafficGraphCompilationContext context)
     {
@@ -1672,11 +1935,19 @@ internal static class TrafficGraphCompilerStages
                 movement.Source,
                 movement.SourceDistanceUnits,
                 true);
+            movement.SourceDistanceUnits = ClampDistanceToSegment(
+                context,
+                movement.SourceSegmentId,
+                movement.SourceDistanceUnits);
             movement.TargetSegmentId = FindLaneSegmentId(
                 context,
                 movement.Target,
                 movement.TargetDistanceUnits,
                 false);
+            movement.TargetDistanceUnits = ClampDistanceToSegment(
+                context,
+                movement.TargetSegmentId,
+                movement.TargetDistanceUnits);
         }
     }
 
@@ -1786,16 +2057,14 @@ internal static class TrafficGraphCompilerStages
                     continue;
                 }
 
-                if (port.PortType == PortType.Entry ||
-                    port.PortType == PortType.Both)
+                if (port.PortType.AllowsFlow(PortFlowDirection.Entry))
                 {
                     AddUniqueLaneAnchor(
                         entry,
                         new LanePositionAnchorRecord(lane.Id, distanceUnits));
                 }
 
-                if (port.PortType == PortType.Exit ||
-                    port.PortType == PortType.Both)
+                if (port.PortType.AllowsFlow(PortFlowDirection.Exit))
                 {
                     AddUniqueLaneAnchor(
                         exit,
@@ -1929,20 +2198,25 @@ internal static class TrafficGraphCompilerStages
 
     private static void ApplyChaikinInPlace(
         List<Vector3> path,
-        int iterations)
+        int iterations,
+        float cornerCutRatio)
     {
         if (path == null || path.Count < 3 || iterations <= 0) return;
+        cornerCutRatio = Mathf.Clamp(cornerCutRatio, 0.01f, 0.49f);
 
         for (int iteration = 0; iteration < iterations; iteration++)
         {
+            float iterationCutRatio = iteration == 0
+                ? cornerCutRatio
+                : RoadGeometryRules.StandardCornerCutRatio;
             var smoothed = new List<Vector3>(path.Count * 2);
             smoothed.Add(path[0]);
             for (int i = 0; i < path.Count - 1; i++)
             {
                 Vector3 p0 = path[i];
                 Vector3 p1 = path[i + 1];
-                smoothed.Add(Vector3.Lerp(p0, p1, 0.25f));
-                smoothed.Add(Vector3.Lerp(p0, p1, 0.75f));
+                smoothed.Add(Vector3.Lerp(p0, p1, iterationCutRatio));
+                smoothed.Add(Vector3.Lerp(p0, p1, 1f - iterationCutRatio));
             }
             smoothed.Add(path[path.Count - 1]);
 
@@ -2022,6 +2296,27 @@ internal static class TrafficGraphCompilerStages
 
         if (best == null) best = FindNearestLaneSegment(context, lane, distance);
         return best != null ? best.Id : LaneSegmentId.Invalid;
+    }
+
+    private static float ClampDistanceToSegment(
+        TrafficGraphCompilationContext context,
+        LaneSegmentId segmentId,
+        float distance)
+    {
+        if (context == null || !segmentId.IsValid) return distance;
+
+        for (int i = 0; i < context.LaneSegments.Count; i++)
+        {
+            LaneSegmentDraft segment = context.LaneSegments[i];
+            if (segment.Id != segmentId) continue;
+
+            return Mathf.Clamp(
+                distance,
+                segment.StartDistanceUnits,
+                segment.EndDistanceUnits);
+        }
+
+        return distance;
     }
 
     private static bool IsDistanceInSegment(
@@ -2209,16 +2504,33 @@ internal static class TrafficGraphCompilerStages
             movement.Target.Samples,
             movement.TargetDistanceUnits,
             out Vector3 targetDirection);
+
+        return BuildBezierMovementCurve(
+            start,
+            end,
+            sourceDirection,
+            targetDirection,
+            MovementCurveSamples);
+    }
+
+    private static List<Vector3> BuildBezierMovementCurve(
+        Vector3 start,
+        Vector3 end,
+        Vector3 sourceDirection,
+        Vector3 targetDirection,
+        int sampleCount)
+    {
+        sampleCount = Mathf.Max(2, sampleCount);
         float controlDistance = Mathf.Max(
             0.1f,
             Vector3.Distance(start, end) * 0.4f);
         Vector3 controlA = start + sourceDirection * controlDistance;
         Vector3 controlB = end - targetDirection * controlDistance;
 
-        var result = new List<Vector3>(MovementCurveSamples);
-        for (int i = 0; i < MovementCurveSamples; i++)
+        var result = new List<Vector3>(sampleCount);
+        for (int i = 0; i < sampleCount; i++)
         {
-            float t = (float)i / (MovementCurveSamples - 1);
+            float t = (float)i / (sampleCount - 1);
             float oneMinusT = 1f - t;
             result.Add(
                 oneMinusT * oneMinusT * oneMinusT * start +
@@ -2388,6 +2700,11 @@ internal static class TrafficGraphCompilerStages
                 Vector2Int.zero,
                 directionBit);
         return ((Vector2)offset).normalized;
+    }
+
+    private static Vector2 Perpendicular(Vector2 direction)
+    {
+        return new Vector2(-direction.y, direction.x);
     }
 
     private static List<NormalizedRoadCell> SortedCells(

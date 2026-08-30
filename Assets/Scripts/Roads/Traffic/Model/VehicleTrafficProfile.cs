@@ -269,25 +269,18 @@ public sealed class VehicleTrafficProfile
             diagnostics,
             source);
 
-        RoadPermissionMask permissions = sourceAsset.trafficRoadPermissions;
-        VehicleCapabilityMask capabilities = sourceAsset.trafficCapabilities;
-        if (capabilities == VehicleCapabilityMask.None)
-        {
-            diagnostics.AddWarning(
-                TrafficDiagnosticCode.CompatibilityDefaultApplied,
-                $"{nameof(sourceAsset.trafficCapabilities)} used compatibility default {VehicleCapabilityMask.GroundRoad}.",
-                source);
-            capabilities = VehicleCapabilityMask.GroundRoad;
-        }
-
-        if (permissions == RoadPermissionMask.None)
-        {
-            diagnostics.AddWarning(
-                TrafficDiagnosticCode.CompatibilityDefaultApplied,
-                $"{nameof(sourceAsset.trafficRoadPermissions)} used compatibility default {RoadPermissionMask.GeneralRoad}.",
-                source);
-            permissions = RoadPermissionMask.GeneralRoad;
-        }
+        RoadPermissionMask permissions = RoadProfile.NormalizeRoadPermissionMask(
+            sourceAsset.trafficRoadPermissions,
+            RoadPermissionMask.GeneralRoad,
+            nameof(sourceAsset.trafficRoadPermissions),
+            diagnostics,
+            source);
+        VehicleCapabilityMask capabilities = RoadProfile.NormalizeVehicleCapabilityMask(
+            sourceAsset.trafficCapabilities,
+            VehicleCapabilityMask.GroundRoad,
+            nameof(sourceAsset.trafficCapabilities),
+            diagnostics,
+            source);
 
         profile = new VehicleTrafficProfile(
             VehicleTrafficProfileId.FromStableKey(sourceKey),

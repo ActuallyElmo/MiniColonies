@@ -13,12 +13,21 @@ public class GridOverlayHandler : MonoBehaviour
     [Tooltip("How high above the terrain the projector should sit. Keep this high enough to clear cliffs.")]
     public float projectorHeightOffset = 10f;
 
+    private Camera _camera;
+
     private void Update()
     {
-        if(gridProjector == null) return; // Safety check in case we forgot to assign the projector prefab
+        if (gridProjector == null) return;
+
+        if (_camera == null) _camera = Camera.main;
+        if (_camera == null)
+        {
+            if (gridProjector.activeSelf) gridProjector.SetActive(false);
+            return;
+        }
         
         // Cast a ray from the mouse pointer into the world
-        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+        Ray ray = _camera.ScreenPointToRay(Input.mousePosition);
         
         if (Physics.Raycast(ray, out RaycastHit hit, 1000f, terrainLayer))
         {

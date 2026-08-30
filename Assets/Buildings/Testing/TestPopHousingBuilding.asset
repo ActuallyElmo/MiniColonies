@@ -12,12 +12,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 60e8788c51bb5604a8829923315667d4, type: 3}
   m_Name: TestPopHousingBuilding
   m_EditorClassIdentifier: 
-  buildingName: New Building
+  buildingName: Basic House
   prefab: {fileID: 6105289989881189314, guid: ad82a134774e67644a00cb797f9c6633, type: 3}
   footprint:
   - localPosition: {x: 0, y: 0}
     isPort: 1
-    portType: 3
-  popTransportVehiclesStorageSpace: 0
+    portType: 6
+  popTransportVehiclesStorageSpace: 5
   typesOfPopTransportVehiclesAllowed:
   - {fileID: 11400000, guid: 29f074fd828f73342bd8b2164f520e63, type: 2}
+  autoFillVehicleSpaceForTesting: 1
+  testingAutoFillVehicle: {fileID: 11400000, guid: 29f074fd828f73342bd8b2164f520e63, type: 2}

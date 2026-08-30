@@ -161,14 +161,16 @@ public class FIFOIntersectionController : IIntersectionController
     {
         if (vehicle == null || fromEdge == null) return false;
 
-        float maximumSpeed = Mathf.Min(
-            vehicle.GetMaximumSpeedUnitsPerSecond(),
-            fromEdge.speedLimit);
+        float approachSpeed = Mathf.Min(
+            Mathf.Max(0f, vehicle.conveyorCurrentSpeed),
+            Mathf.Min(
+                vehicle.GetMaximumSpeedUnitsPerSecond(),
+                fromEdge.speedLimit));
         float deceleration = Mathf.Max(
             0.1f,
             vehicle.GetDecelerationUnitsPerSecondSquared());
         float brakingDistance =
-            maximumSpeed * maximumSpeed /
+            approachSpeed * approachSpeed /
             (2f * deceleration);
         float decisionDistance = Mathf.Max(
             MinimumApproachDecisionDistance,

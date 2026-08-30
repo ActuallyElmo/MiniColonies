@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using UnityEngine;
 
 public class TrafficSystemBackend : MonoBehaviour
@@ -19,10 +20,6 @@ public class TrafficSystemBackend : MonoBehaviour
     public IReadOnlyList<TrafficDiagnostic> LastCompilerDiagnostics =>
         _lastCompilerDiagnostics.Items;
 
-    private Dictionary<Vector2Int, List<LaneEndpoint>> _intersectionIncoming =
-        new Dictionary<Vector2Int, List<LaneEndpoint>>();
-    private Dictionary<Vector2Int, List<LaneEndpoint>> _intersectionOutgoing =
-        new Dictionary<Vector2Int, List<LaneEndpoint>>();
     private Dictionary<Vector2Int, IIntersectionController> _intersectionControllers =
         new Dictionary<Vector2Int, IIntersectionController>();
     private readonly TrafficSpatialIndex _spatialIndex = new TrafficSpatialIndex();
@@ -34,7 +31,10 @@ public class TrafficSystemBackend : MonoBehaviour
         new TrafficDiagnosticCollection();
     private TrafficDiagnosticCollection _lastCompilerDiagnostics =
         new TrafficDiagnosticCollection();
+    private readonly HashSet<string> _loggedDiagnosticKeys =
+        new HashSet<string>(StringComparer.Ordinal);
     private int _lastReservedGraphVersion;
+    private const int MaxLoggedDiagnosticLines = 8;
 
     [Header("Debug Visualization")]
     public bool showWaypoints = true;
@@ -45,8 +45,13 @@ public class TrafficSystemBackend : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
     private void Start()
@@ -63,6 +68,8 @@ public class TrafficSystemBackend : MonoBehaviour
         {
             RoadNetworkManager.Instance.OnNetworkReady -= HandleNetworkReady;
         }
+
+        if (Instance == this) Instance = null;
     }
 
     private void HandleNetworkReady()
@@ -159,13 +166,6 @@ public class TrafficSystemBackend : MonoBehaviour
         allEdges = adapterResult != null
             ? adapterResult.Edges
             : new List<TrafficEdge>();
-        _intersectionIncoming = adapterResult != null
-            ? adapterResult.IncomingByCell
-            : new Dictionary<Vector2Int, List<LaneEndpoint>>();
-        _intersectionOutgoing = adapterResult != null
-            ? adapterResult.OutgoingByCell
-            : new Dictionary<Vector2Int, List<LaneEndpoint>>();
-
         RebuildStableEdgeLookup();
         _spatialIndex.Rebuild(allEdges);
         RebuildIntersectionControllers();
@@ -211,26 +211,102 @@ public class TrafficSystemBackend : MonoBehaviour
 
     private void LogSnapshotErrors()
     {
-        for (int i = 0; i < _lastSnapshotDiagnostics.Count; i++)
-        {
-            TrafficDiagnostic diagnostic = _lastSnapshotDiagnostics[i];
-            if (diagnostic.Severity == TrafficDiagnosticSeverity.Error)
-            {
-                Debug.LogError(diagnostic.ToString());
-            }
-        }
+        LogDiagnosticErrorsOnce("Traffic snapshot", _lastSnapshotDiagnostics);
     }
 
     private void LogCompilerErrors()
     {
-        for (int i = 0; i < _lastCompilerDiagnostics.Count; i++)
+        LogDiagnosticErrorsOnce("Traffic compiler", _lastCompilerDiagnostics);
+    }
+
+    private void LogDiagnosticErrorsOnce(
+        string label,
+        TrafficDiagnosticCollection diagnostics)
+    {
+        if (diagnostics == null || !diagnostics.HasErrors) return;
+
+        string diagnosticKey = BuildDiagnosticErrorKey(label, diagnostics);
+        if (!_loggedDiagnosticKeys.Add(diagnosticKey)) return;
+
+        int errorCount = 0;
+        for (int i = 0; i < diagnostics.Count; i++)
         {
-            TrafficDiagnostic diagnostic = _lastCompilerDiagnostics[i];
-            if (diagnostic.Severity == TrafficDiagnosticSeverity.Error)
+            if (diagnostics[i].Severity == TrafficDiagnosticSeverity.Error)
             {
-                Debug.LogError(diagnostic.ToString());
+                errorCount++;
             }
         }
+
+        var message = new StringBuilder(512);
+        message.Append(label);
+        message.Append(" failed with ");
+        message.Append(errorCount);
+        message.Append(errorCount == 1 ? " error." : " errors.");
+
+        int loggedLines = 0;
+        for (int i = 0;
+             i < diagnostics.Count && loggedLines < MaxLoggedDiagnosticLines;
+             i++)
+        {
+            TrafficDiagnostic diagnostic = diagnostics[i];
+            if (diagnostic.Severity != TrafficDiagnosticSeverity.Error)
+            {
+                continue;
+            }
+
+            message.AppendLine();
+            message.Append(diagnostic);
+            loggedLines++;
+        }
+
+        if (errorCount > loggedLines)
+        {
+            message.AppendLine();
+            message.Append("Additional errors suppressed: ");
+            message.Append(errorCount - loggedLines);
+        }
+
+        Debug.LogError(message.ToString());
+    }
+
+    private string BuildDiagnosticErrorKey(
+        string label,
+        TrafficDiagnosticCollection diagnostics)
+    {
+        var key = new StringBuilder(512);
+        key.Append(label);
+        for (int i = 0; i < diagnostics.Count; i++)
+        {
+            TrafficDiagnostic diagnostic = diagnostics[i];
+            if (diagnostic.Severity != TrafficDiagnosticSeverity.Error)
+            {
+                continue;
+            }
+
+            TrafficDiagnosticSource source = diagnostic.Source;
+            key.Append('|');
+            key.Append((int)diagnostic.Code);
+            key.Append(':');
+            key.Append(diagnostic.Message);
+            key.Append(":stable=");
+            key.Append(source.StableId);
+            key.Append(":profile=");
+            key.Append(source.ProfileKey);
+            if (source.HasSourceCell)
+            {
+                key.Append(":cell=");
+                key.Append(source.SourceCell.x);
+                key.Append(',');
+                key.Append(source.SourceCell.y);
+            }
+            if (source.VehicleId.IsValid)
+            {
+                key.Append(":vehicle=");
+                key.Append(source.VehicleId.Value);
+            }
+        }
+
+        return key.ToString();
     }
 
     public void TickIntersectionControllers(float deltaTime)
@@ -239,26 +315,6 @@ public class TrafficSystemBackend : MonoBehaviour
         {
             controller.Tick(deltaTime);
         }
-    }
-
-    public List<LaneEndpoint> GetIncomingLaneEndpoints(Vector2Int cell)
-    {
-        if (_intersectionIncoming.TryGetValue(cell, out List<LaneEndpoint> endpoints))
-        {
-            return new List<LaneEndpoint>(endpoints);
-        }
-
-        return new List<LaneEndpoint>();
-    }
-
-    public List<LaneEndpoint> GetOutgoingLaneEndpoints(Vector2Int cell)
-    {
-        if (_intersectionOutgoing.TryGetValue(cell, out List<LaneEndpoint> endpoints))
-        {
-            return new List<LaneEndpoint>(endpoints);
-        }
-
-        return new List<LaneEndpoint>();
     }
 
     public bool TryGetCurrentManagedEdge(

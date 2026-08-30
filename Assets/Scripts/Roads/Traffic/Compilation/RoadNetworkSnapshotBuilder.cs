@@ -19,9 +19,13 @@ public static class RoadNetworkSnapshotBuilder
             GridPosition = cell.gridPosition;
             ElevationLayer = cell.elevationLayer;
             PhysicalConnections = cell.connections;
-            LegalOutgoingDirections = cell.outConnections;
-            LegalIncomingDirections = cell.inConnections;
             RoadType = cell.roadType;
+            NormalizeLegalDirections(
+                cell,
+                out int legalOutgoingDirections,
+                out int legalIncomingDirections);
+            LegalOutgoingDirections = legalOutgoingDirections;
+            LegalIncomingDirections = legalIncomingDirections;
             NodeKind = nodeKind;
         }
     }
@@ -209,6 +213,41 @@ public static class RoadNetworkSnapshotBuilder
         }
 
         return sources;
+    }
+
+    private static void NormalizeLegalDirections(
+        RoadCell cell,
+        out int legalOutgoingDirections,
+        out int legalIncomingDirections)
+    {
+        legalOutgoingDirections = 0;
+        legalIncomingDirections = 0;
+        if (cell == null || cell.roadType == null) return;
+
+        int physicalConnections = cell.connections;
+        if (cell.roadType.UsesTwoWayTraffic)
+        {
+            legalOutgoingDirections = physicalConnections;
+            legalIncomingDirections = physicalConnections;
+            return;
+        }
+
+        for (int directionIndex = 0; directionIndex < 8; directionIndex++)
+        {
+            int directionBit = 1 << directionIndex;
+            if ((physicalConnections & directionBit) == 0) continue;
+
+            bool canExit = (cell.outConnections & directionBit) != 0;
+            bool canEnter = (cell.inConnections & directionBit) != 0;
+            if (canExit == canEnter)
+            {
+                canExit = true;
+                canEnter = false;
+            }
+
+            if (canExit) legalOutgoingDirections |= directionBit;
+            if (canEnter) legalIncomingDirections |= directionBit;
+        }
     }
 
     private static List<IntersectionPolicySource> CapturePolicySources(

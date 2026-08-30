@@ -9,10 +9,14 @@ public class ConveyorTrafficManager : MonoBehaviour
         public VehicleAI vehicle;
         public TrafficEdge connector;
         public TrafficEdge targetEdge;
+        public TrafficEdge sourceEdge;
         public float minDistance;
         public float maxDistance;
+        public float sourceMinDistance;
+        public float sourceMaxDistance;
         public int sequence;
         public bool releasing;
+        public bool sourceReservationActive;
         public int releaseRouteEdgeIndex;
         public float releaseDistanceOnEdge;
         public float releaseClearanceDistance;
@@ -58,8 +62,8 @@ public class ConveyorTrafficManager : MonoBehaviour
     private const float StopLineLookaheadUnits = 3f;
     private const float RouteFollowingLookaheadUnits = 12f;
     private const float StopLineBodyClearance = 0.03f;
-    private const float IntersectionApproachBufferMinUnits = 0.65f;
-    private const float IntersectionApproachBufferVehicleLengthMultiplier = 3f;
+    private const float IntersectionApproachBufferMinUnits = 0.45f;
+    private const float IntersectionApproachBufferVehicleLengthMultiplier = 1.25f;
     private const float IntersectionYieldCreepSpeedUnitsPerSecond = 0.12f;
     private const float IntersectionRearClearance = 0.05f;
     private const float StopPositionEpsilon = 0.05f;
@@ -76,8 +80,13 @@ public class ConveyorTrafficManager : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
     private void Update()
@@ -121,6 +130,13 @@ public class ConveyorTrafficManager : MonoBehaviour
         {
             BuildingSystemBackend.Instance.OnBuildingPlaced -= HandleBuildingChanged;
             BuildingSystemBackend.Instance.OnBuildingRemoved -= HandleBuildingChanged;
+        }
+
+        if (Instance == this)
+        {
+            _runtimeState.Clear();
+            _reservationService.Clear();
+            Instance = null;
         }
     }
 
@@ -238,16 +254,20 @@ public class ConveyorTrafficManager : MonoBehaviour
                 continue;
             }
 
+            vehicle.RefreshActiveNetworkAfterGraphRebuild();
+
             if (TryRemapVehicleToCurrentGraph(vehicle, graphVersion))
             {
                 continue;
             }
 
+            bool wasConveyorMoving = vehicle.isConveyorMoving;
             ClearVehicleTrafficState(vehicle);
-            vehicle.RequestConveyorRerouteAfterGraphRebuild();
+            vehicle.RequestConveyorRerouteAfterGraphRebuild(wasConveyorMoving);
         }
 
         _graphRebuildVehicles.Clear();
+        VehicleAI.NotifyTrafficGraphRebuiltForWaitingVehicles();
     }
 
     private void ReleaseVehicleGraphReferences(VehicleAI vehicle)
@@ -631,8 +651,9 @@ public class ConveyorTrafficManager : MonoBehaviour
         if (edge == null || vehicle.conveyorRoute == null) return;
         if (!IsVehicleRouteCurrent(vehicle))
         {
+            bool wasConveyorMoving = vehicle.isConveyorMoving;
             LeaveTraffic(vehicle);
-            vehicle.RequestConveyorRerouteAfterGraphRebuild();
+            vehicle.RequestConveyorRerouteAfterGraphRebuild(wasConveyorMoving);
             return;
         }
 
@@ -652,8 +673,7 @@ public class ConveyorTrafficManager : MonoBehaviour
             vehicle.lastTacticalLaneDecision =
                 _tacticalLanePlanner.Decide(
                     vehicle,
-                    nextRouteEdge,
-                    distanceToEdgeEnd);
+                    nextRouteEdge);
             PreAcquireApproachingConnector(
                 vehicle,
                 nextRouteEdge,
@@ -1327,8 +1347,7 @@ public class ConveyorTrafficManager : MonoBehaviour
     {
         if (vehicle == null ||
             connector == null ||
-            (connector.kind != TrafficEdgeKind.LaneChange &&
-             connector.kind != TrafficEdgeKind.RoadTypeTransition))
+            connector.kind != TrafficEdgeKind.RoadTypeTransition)
         {
             return;
         }
@@ -1400,7 +1419,8 @@ public class ConveyorTrafficManager : MonoBehaviour
             return true;
         }
 
-        if (connector.conflictingLaneChangeEdge != null &&
+        if (connector.kind != TrafficEdgeKind.LaneChange &&
+            connector.conflictingLaneChangeEdge != null &&
             _runtimeState.GetOccupantCount(connector.conflictingLaneChangeEdge) > 0)
         {
             RecordReservationContention(commitReservation);
@@ -1408,6 +1428,12 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         TrafficEdge targetEdge = connector.reservedTargetEdge;
+        if (targetEdge == null &&
+            connector.kind == TrafficEdgeKind.LaneChange)
+        {
+            targetEdge = GetConnectorTargetEdgeFromRoute(vehicle, connector);
+        }
+
         if (targetEdge == null) return true;
         return CanAcquireConnectorReservation(
             vehicle,
@@ -1424,6 +1450,15 @@ public class ConveyorTrafficManager : MonoBehaviour
     {
         if (vehicle == null || connector == null || targetEdge == null) return false;
 
+        if (connector.kind == TrafficEdgeKind.LaneChange)
+        {
+            return CanAcquireLaneChangeReservation(
+                vehicle,
+                connector,
+                targetEdge,
+                commitReservation);
+        }
+
         GetConnectorReservationInterval(
             vehicle,
             connector,
@@ -1432,6 +1467,7 @@ public class ConveyorTrafficManager : MonoBehaviour
             out float maxDistance);
 
         ConnectorReservationRequest request = null;
+        bool hasAcquiredReservation = false;
         if (_connectorRequests.TryGetValue(vehicle, out ConnectorReservationRequest existing))
         {
             request = existing;
@@ -1445,20 +1481,10 @@ public class ConveyorTrafficManager : MonoBehaviour
                 ReleaseConnectorReservation(vehicle);
                 request = null;
             }
-        }
-
-        if (request == null && commitReservation)
-        {
-            request = new ConnectorReservationRequest
+            else
             {
-                vehicle = vehicle,
-                connector = connector,
-                targetEdge = targetEdge,
-                minDistance = minDistance,
-                maxDistance = maxDistance,
-                sequence = _nextConnectorRequestSequence++
-            };
-            _connectorRequests[vehicle] = request;
+                hasAcquiredReservation = !request.releasing;
+            }
         }
 
         int requestSequence = request != null ? request.sequence : int.MaxValue;
@@ -1480,7 +1506,8 @@ public class ConveyorTrafficManager : MonoBehaviour
             }
         }
 
-        if (!CanReserveEdgeInterval(
+        if (!hasAcquiredReservation &&
+            !CanReserveEdgeInterval(
                 targetEdge,
                 minDistance,
                 maxDistance,
@@ -1491,8 +1518,20 @@ public class ConveyorTrafficManager : MonoBehaviour
             return false;
         }
 
-        if (commitReservation && request != null)
+        if (commitReservation)
         {
+            if (request == null)
+            {
+                request = new ConnectorReservationRequest
+                {
+                    vehicle = vehicle,
+                    connector = connector,
+                    targetEdge = targetEdge,
+                    sequence = _nextConnectorRequestSequence++
+                };
+                _connectorRequests[vehicle] = request;
+            }
+
             request.minDistance = minDistance;
             request.maxDistance = maxDistance;
             request.releasing = false;
@@ -1504,9 +1543,84 @@ public class ConveyorTrafficManager : MonoBehaviour
                 request.sequence,
                 GetCurrentRouteGraphVersion(vehicle)))
             {
+                if (!hasAcquiredReservation)
+                {
+                    _connectorRequests.Remove(vehicle);
+                }
+
                 RecordReservationContention(commitReservation);
                 return false;
             }
+        }
+
+        return true;
+    }
+
+    private bool CanAcquireLaneChangeReservation(
+        VehicleAI vehicle,
+        TrafficEdge connector,
+        TrafficEdge targetEdge,
+        bool commitReservation)
+    {
+        if (vehicle == null || connector == null || targetEdge == null)
+        {
+            return false;
+        }
+
+        ConnectorReservationRequest request = null;
+        if (_connectorRequests.TryGetValue(
+                vehicle,
+                out ConnectorReservationRequest existing))
+        {
+            request = existing;
+            if (request.connector != connector ||
+                request.targetEdge != targetEdge)
+            {
+                if (request.releasing)
+                {
+                    return false;
+                }
+
+                ReleaseConnectorReservation(vehicle);
+                request = null;
+            }
+        }
+
+        if (!commitReservation)
+        {
+            return true;
+        }
+
+        if (request == null)
+        {
+            request = new ConnectorReservationRequest
+            {
+                vehicle = vehicle,
+                connector = connector,
+                targetEdge = targetEdge,
+                sourceEdge = vehicle.currentEdge != connector
+                    ? vehicle.currentEdge
+                    : null,
+                sequence = _nextConnectorRequestSequence++
+            };
+            _connectorRequests[vehicle] = request;
+        }
+
+        request.releasing = false;
+        if (request.sourceEdge != null)
+        {
+            GetLaneChangeSourceReservationInterval(
+                vehicle,
+                request.sourceEdge,
+                out request.sourceMinDistance,
+                out request.sourceMaxDistance);
+            request.sourceReservationActive = _reservationService.Reserve(
+                request.sourceEdge,
+                vehicle,
+                request.sourceMinDistance,
+                request.sourceMaxDistance,
+                request.sequence,
+                GetCurrentRouteGraphVersion(vehicle));
         }
 
         return true;
@@ -1524,21 +1638,11 @@ public class ConveyorTrafficManager : MonoBehaviour
         out float minDistance,
         out float maxDistance)
     {
-        float clearance = vehicle.GetVehicleLengthUnits() * 0.5f +
-                          vehicle.GetMinimumFollowingGapUnits();
+        float frontClearance = vehicle.GetVehicleLengthUnits() * 0.5f +
+                               vehicle.GetMinimumFollowingGapUnits();
 
-        if (connector.kind == TrafficEdgeKind.LaneChange)
-        {
-            float forwardLookahead = GetConnectorReservationLookahead(
-                vehicle,
-                targetEdge);
-            minDistance = -clearance;
-            maxDistance = clearance + forwardLookahead;
-            return;
-        }
-
-        minDistance = -clearance;
-        maxDistance = clearance;
+        minDistance = -frontClearance;
+        maxDistance = frontClearance;
     }
 
     private void UpdateConnectorReservation(VehicleAI vehicle)
@@ -1562,30 +1666,18 @@ public class ConveyorTrafficManager : MonoBehaviour
             request.connector != null &&
             request.connector.kind == TrafficEdgeKind.LaneChange)
         {
-            float progress = request.connector.totalLength > 0.0001f
-                ? Mathf.Clamp01(vehicle.conveyorDistanceOnEdge / request.connector.totalLength)
+            float laneChangeProgress = request.connector.totalLength > 0.0001f
+                ? Mathf.Clamp01(
+                    vehicle.conveyorDistanceOnEdge /
+                    request.connector.totalLength)
                 : 1f;
-            float clearance = vehicle.GetVehicleLengthUnits() * 0.5f +
-                              vehicle.GetMinimumFollowingGapUnits();
-            float forwardLookahead = GetConnectorReservationLookahead(
-                vehicle,
-                request.targetEdge);
-            float projectedDistance = request.targetEdge.totalLength * progress;
-            request.minDistance = projectedDistance - clearance;
-            request.maxDistance =
-                projectedDistance +
-                clearance +
-                forwardLookahead;
-            if (!_reservationService.Reserve(
-                request.targetEdge,
-                vehicle,
-                request.minDistance,
-                request.maxDistance,
-                request.sequence,
-                GetCurrentRouteGraphVersion(vehicle)))
+            if (laneChangeProgress < 0.5f)
             {
-                ReleaseConnectorReservation(vehicle);
+                RefreshLaneChangeSourceReservation(vehicle, request);
+                return;
             }
+
+            ReleaseLaneChangeSourceReservation(vehicle, request);
             return;
         }
 
@@ -1633,16 +1725,91 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
     }
 
-    private float GetConnectorReservationLookahead(
+    private void GetLaneChangeSourceReservationInterval(
         VehicleAI vehicle,
-        TrafficEdge targetEdge)
+        TrafficEdge sourceEdge,
+        out float minDistance,
+        out float maxDistance)
     {
-        if (vehicle == null || targetEdge == null) return 0f;
+        float halfLength =
+            vehicle != null ? vehicle.GetVehicleLengthUnits() * 0.5f : 0f;
+        float gap =
+            vehicle != null ? vehicle.GetMinimumFollowingGapUnits() : 0f;
+        float sourceEnd = sourceEdge != null ? sourceEdge.totalLength : 0f;
+        minDistance = sourceEnd - halfLength - gap;
+        maxDistance = sourceEnd + halfLength;
+    }
 
-        return Mathf.Min(
-            targetEdge.totalLength,
-            vehicle.GetVehicleLengthUnits() +
-            vehicle.GetMinimumFollowingGapUnits());
+    private void RefreshLaneChangeSourceReservation(
+        VehicleAI vehicle,
+        ConnectorReservationRequest request)
+    {
+        if (vehicle == null ||
+            request == null ||
+            request.sourceEdge == null)
+        {
+            return;
+        }
+
+        GetLaneChangeSourceReservationInterval(
+            vehicle,
+            request.sourceEdge,
+            out request.sourceMinDistance,
+            out request.sourceMaxDistance);
+        request.sourceReservationActive = _reservationService.Reserve(
+            request.sourceEdge,
+            vehicle,
+            request.sourceMinDistance,
+            request.sourceMaxDistance,
+            request.sequence,
+            GetCurrentRouteGraphVersion(vehicle));
+    }
+
+    private void ReleaseLaneChangeSourceReservation(
+        VehicleAI vehicle,
+        ConnectorReservationRequest request)
+    {
+        if (vehicle == null ||
+            request == null ||
+            request.sourceEdge == null ||
+            !request.sourceReservationActive)
+        {
+            return;
+        }
+
+        _reservationService.Release(request.sourceEdge, vehicle);
+        request.sourceReservationActive = false;
+    }
+
+    private TrafficEdge GetConnectorTargetEdgeFromRoute(
+        VehicleAI vehicle,
+        TrafficEdge connector)
+    {
+        if (vehicle == null ||
+            connector == null ||
+            vehicle.conveyorRoute == null ||
+            vehicle.conveyorRoute.ManagedEdges == null)
+        {
+            return null;
+        }
+
+        int connectorIndex = vehicle.conveyorRouteEdgeIndex + 1;
+        if (vehicle.currentEdge == connector)
+        {
+            connectorIndex = vehicle.conveyorRouteEdgeIndex;
+        }
+
+        if (connectorIndex < 0 ||
+            connectorIndex >= vehicle.conveyorRoute.ManagedEdges.Count ||
+            vehicle.conveyorRoute.ManagedEdges[connectorIndex] != connector)
+        {
+            return null;
+        }
+
+        int targetIndex = connectorIndex + 1;
+        return targetIndex < vehicle.conveyorRoute.ManagedEdges.Count
+            ? vehicle.conveyorRoute.ManagedEdges[targetIndex]
+            : null;
     }
 
     private void BeginConnectorReservationRelease(
@@ -1658,16 +1825,20 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         request.releasing = true;
+        ReleaseLaneChangeSourceReservation(vehicle, request);
+        if (request.connector != null &&
+            request.connector.kind == TrafficEdgeKind.LaneChange)
+        {
+            ReleaseConnectorReservation(vehicle);
+            return;
+        }
+
         request.releaseRouteEdgeIndex = routeEdgeIndex;
         request.releaseDistanceOnEdge = distanceOnEdge;
         request.releaseClearanceDistance =
             vehicle.GetVehicleLengthUnits() * 0.5f +
             vehicle.GetMinimumFollowingGapUnits();
-        request.releaseTargetBaseDistance =
-            request.connector != null &&
-            request.connector.kind == TrafficEdgeKind.LaneChange
-                ? request.targetEdge.totalLength
-                : 0f;
+        request.releaseTargetBaseDistance = 0f;
         UpdateConnectorReservation(vehicle);
     }
 
@@ -1676,6 +1847,7 @@ public class ConveyorTrafficManager : MonoBehaviour
         if (vehicle == null) return;
         if (!_connectorRequests.TryGetValue(vehicle, out ConnectorReservationRequest request)) return;
 
+        ReleaseLaneChangeSourceReservation(vehicle, request);
         if (request != null && request.targetEdge != null)
         {
             _reservationService.Release(request.targetEdge, vehicle);

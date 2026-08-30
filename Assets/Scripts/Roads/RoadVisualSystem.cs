@@ -26,25 +26,26 @@ public struct MeshKey
 public class MeshGroup
 {
     public GameObject parentObj;
-    public Mesh roadMesh, curbMesh, shadowMesh;
-    
-    public List<Vector3> rVerts = new List<Vector3>(), cVerts = new List<Vector3>(), sVerts = new List<Vector3>();
-    public List<int> rTris = new List<int>(), cTris = new List<int>(), sTris = new List<int>();
-    public List<Vector2> rUVs = new List<Vector2>(), cUVs = new List<Vector2>(), sUVs = new List<Vector2>();
-    public List<Vector3> rNorms = new List<Vector3>(), cNorms = new List<Vector3>(), sNorms = new List<Vector3>();
+    public Mesh roadMesh, curbMesh, shadowMesh, markingMesh;
 
-    public void Clear()
+    public void Dispose()
     {
-        rVerts.Clear(); rTris.Clear(); rUVs.Clear(); rNorms.Clear();
-        cVerts.Clear(); cTris.Clear(); cUVs.Clear(); cNorms.Clear();
-        sVerts.Clear(); sTris.Clear(); sUVs.Clear(); sNorms.Clear();
+        DestroyRuntimeMesh(roadMesh);
+        DestroyRuntimeMesh(curbMesh);
+        DestroyRuntimeMesh(shadowMesh);
+        DestroyRuntimeMesh(markingMesh);
+        roadMesh = null;
+        curbMesh = null;
+        shadowMesh = null;
+        markingMesh = null;
     }
 
-    public void Apply()
+    private static void DestroyRuntimeMesh(Mesh mesh)
     {
-        roadMesh.Clear(); roadMesh.vertices = rVerts.ToArray(); roadMesh.triangles = rTris.ToArray(); roadMesh.uv = rUVs.ToArray(); roadMesh.normals = rNorms.ToArray();
-        curbMesh.Clear(); curbMesh.vertices = cVerts.ToArray(); curbMesh.triangles = cTris.ToArray(); curbMesh.uv = cUVs.ToArray(); curbMesh.normals = cNorms.ToArray();
-        shadowMesh.Clear(); shadowMesh.vertices = sVerts.ToArray(); shadowMesh.triangles = sTris.ToArray(); shadowMesh.uv = sUVs.ToArray(); shadowMesh.normals = sNorms.ToArray();
+        if (mesh == null) return;
+
+        if (Application.isPlaying) Object.Destroy(mesh);
+        else Object.DestroyImmediate(mesh);
     }
 }
 
@@ -62,13 +63,17 @@ public class RoadVisualSystem : MonoBehaviour
     public Material previewRoadMaterial;
     public Material previewCurbMaterial;
 
-    // Use the custom struct key so temporary meshes get isolated
     public Dictionary<Vector2Int, Dictionary<MeshKey, MeshGroup>> ChunkGroups { get; private set; } = new Dictionary<Vector2Int, Dictionary<MeshKey, MeshGroup>>();
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
     }
 
     private void Start()
@@ -81,10 +86,29 @@ public class RoadVisualSystem : MonoBehaviour
     {
         if (RoadSystemBackend.Instance != null)
             RoadSystemBackend.Instance.OnChunksDirty -= HandleDirtyChunks;
+
+        if (Instance != this) return;
+
+        foreach (Dictionary<MeshKey, MeshGroup> groupsByType in ChunkGroups.Values)
+        {
+            foreach (MeshGroup group in groupsByType.Values)
+            {
+                group?.Dispose();
+            }
+        }
+
+        ChunkGroups.Clear();
+        Instance = null;
     }
 
     private void HandleDirtyChunks(HashSet<Vector2Int> dirtyChunks)
     {
+        if (RoadSystemBackend.Instance == null ||
+            SimulationTaskManager.Instance == null)
+        {
+            return;
+        }
+
         RoadMeshGenerationTask task = new RoadMeshGenerationTask(dirtyChunks, RoadSystemBackend.Instance.Roads);
         SimulationTaskManager.Instance.EnqueueTask(task);
     }
@@ -119,7 +143,22 @@ public class RoadVisualSystem : MonoBehaviour
         sR.sharedMaterial = shadowMaterial;
         group.shadowMesh = new Mesh(); sF.sharedMesh = group.shadowMesh;
 
+        GameObject markingObj = new GameObject("RoadMarkings"); markingObj.transform.SetParent(group.parentObj.transform);
+        MeshFilter mF = markingObj.AddComponent<MeshFilter>();
+        MeshRenderer mR = markingObj.AddComponent<MeshRenderer>();
+        mR.sharedMaterial = GetRoadMarkingMaterial(type, isPreview);
+        group.markingMesh = new Mesh(); mF.sharedMesh = group.markingMesh;
+
         ChunkGroups[chunkPos].Add(key, group);
         return group;
+    }
+
+    private Material GetRoadMarkingMaterial(RoadType type, bool isPreview)
+    {
+        if (isPreview && previewCurbMaterial != null) return previewCurbMaterial;
+        if (type == null) return null;
+        if (type.roadMarkingMaterial != null) return type.roadMarkingMaterial;
+        if (type.curbMaterial != null) return type.curbMaterial;
+        return type.roadMaterial;
     }
 }

@@ -17,8 +17,18 @@ public class BuildingSystemBackend : MonoBehaviour
 
     private void Awake()
     {
-        if (Instance == null) Instance = this;
-        else Destroy(gameObject);
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
+    }
+
+    private void OnDestroy()
+    {
+        if (Instance == this) Instance = null;
     }
 
     // --- DATA ENDPOINTS ---
@@ -32,15 +42,37 @@ public class BuildingSystemBackend : MonoBehaviour
     {
         if (_gridOccupancy.TryGetValue(cell, out Building building))
         {
-            if (building.globalPorts.TryGetValue(cell, out type)) return true;
+            if (building != null &&
+                building.globalPorts.TryGetValue(cell, out type) &&
+                type != PortType.None)
+            {
+                return true;
+            }
         }
         type = PortType.None;
         return false;
     }
 
+    public bool CanBuildRoadAt(Vector2Int cell)
+    {
+        return !_gridOccupancy.ContainsKey(cell) || TryGetPortAt(cell, out _);
+    }
+
     public IReadOnlyList<Building> GetActiveBuildings()
     {
         return _activeBuildings;
+    }
+
+    public void RequestPopTransportDispatch()
+    {
+        for (int i = 0; i < _activeBuildings.Count; i++)
+        {
+            Building building = _activeBuildings[i];
+            if (building != null)
+            {
+                building.RequestPopTransportDispatch();
+            }
+        }
     }
 
     // --- MUTATION ENDPOINTS ---
