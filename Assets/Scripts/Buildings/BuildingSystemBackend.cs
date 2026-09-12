@@ -75,6 +75,12 @@ public class BuildingSystemBackend : MonoBehaviour
         }
     }
 
+    public void RequestResourceTransportDispatch()
+    {
+        for (int i = 0; i < _activeBuildings.Count; i++)
+            if (_activeBuildings[i] != null) _activeBuildings[i].RequestResourceTransportDispatch();
+    }
+
     // --- MUTATION ENDPOINTS ---
 
     public void RegisterBuilding(Building building, List<BuildingTile> activeFootprint)
@@ -93,6 +99,7 @@ public class BuildingSystemBackend : MonoBehaviour
         _activeBuildings.Add(building);
         IncrementAuthoringRevision();
         OnBuildingPlaced?.Invoke(building);
+        RequestResourceTransportDispatch();
     }
 
     public bool NotifyBuildingAuthoringChanged(Building building)
@@ -125,6 +132,17 @@ public class BuildingSystemBackend : MonoBehaviour
             
             // 3. Notify systems
             OnBuildingRemoved?.Invoke(buildingToRemove);
+
+            // Return any resource cargo carried toward the demolished factory.
+            for (int i = 0; i < _activeBuildings.Count; i++)
+            {
+                Building owner = _activeBuildings[i];
+                if (owner == null) continue;
+                var vehicles = owner.OwnedVehicles;
+                for (int v = 0; v < vehicles.Count; v++)
+                    if (vehicles[v] != null && vehicles[v].targetBuilding == buildingToRemove)
+                        vehicles[v].RecallAndDeactivate();
+            }
 
             // 4. Destroy the Unity Object
             Destroy(buildingToRemove.gameObject);

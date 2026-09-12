@@ -42,6 +42,12 @@ public class BuildingPlacementInput : MonoBehaviour
 
     private void Update()
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions)
+        {
+            CancelPlacementPreview();
+            return;
+        }
+
         if (PlayerActionManager.Instance == null || BuildingSystemBackend.Instance == null) return;
 
         PlayerMode currentMode = PlayerActionManager.Instance.currentMode;
@@ -60,6 +66,13 @@ public class BuildingPlacementInput : MonoBehaviour
                 HandleDemolishInput();
             }
         }
+    }
+
+    public void CancelPlacementPreview()
+    {
+        if (_previewObj != null) DestroyPreview();
+        if (BuildingSystemBackend.Instance != null)
+            HandleGlobalPortVisibility(PlayerMode.None);
     }
 
     private void HandleGlobalPortVisibility(PlayerMode currentMode)
@@ -329,7 +342,12 @@ public class BuildingPlacementInput : MonoBehaviour
 
     private void DestroyPreview()
     {
-        if (_previewObj != null) Destroy(_previewObj);
+        if (_previewObj != null)
+        {
+            _previewObj.SetActive(false);
+            Destroy(_previewObj);
+            _previewObj = null;
+        }
         foreach (var pt in _previewTiles)
         {
             if (pt.renderer != null && pt.renderer.sharedMaterial != null) Destroy(pt.renderer.sharedMaterial);

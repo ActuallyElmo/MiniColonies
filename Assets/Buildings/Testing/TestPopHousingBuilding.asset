@@ -18,7 +18,7 @@ MonoBehaviour:
   - localPosition: {x: 0, y: 0}
     isPort: 1
     portType: 6
-  popTransportVehiclesStorageSpace: 5
+  popTransportVehiclesStorageSpace: 15
   typesOfPopTransportVehiclesAllowed:
   - {fileID: 11400000, guid: 29f074fd828f73342bd8b2164f520e63, type: 2}
   autoFillVehicleSpaceForTesting: 1

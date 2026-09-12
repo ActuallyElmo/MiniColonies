@@ -15,9 +15,21 @@ public class GridOverlayHandler : MonoBehaviour
 
     private Camera _camera;
 
+    public void HideOverlay()
+    {
+        if (gridProjector != null && gridProjector.activeSelf)
+            gridProjector.SetActive(false);
+    }
+
     private void Update()
     {
         if (gridProjector == null) return;
+
+        if (!PlayerViewModeManager.AllowsGameplayActions)
+        {
+            HideOverlay();
+            return;
+        }
 
         if (_camera == null) _camera = Camera.main;
         if (_camera == null)

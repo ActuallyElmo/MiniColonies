@@ -27,6 +27,8 @@ public sealed class PopTransportVehicleDragSource : MonoBehaviour,
 
     public void OnBeginDrag(PointerEventData eventData)
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
+
         if (activeDragSource != null && activeDragSource != this)
         {
             activeDragSource.FinishDrag();

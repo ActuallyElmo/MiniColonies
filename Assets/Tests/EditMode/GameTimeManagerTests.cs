@@ -70,4 +70,15 @@ public sealed class GameTimeManagerTests
         Assert.AreEqual(49, changedHours.Count);
         CollectionAssert.AreEqual(new[] { 2, 3 }, changedDays);
     }
+
+    [Test]
+    public void InvalidDayLengthFallsBackToSafeDefault()
+    {
+        _manager.RealMinutesPerDay = float.NaN;
+        Assert.AreEqual(10f, _manager.RealMinutesPerDay);
+        Assert.DoesNotThrow(() => _manager.AdvanceTime(1f));
+
+        _manager.RealMinutesPerDay = float.PositiveInfinity;
+        Assert.AreEqual(10f, _manager.RealMinutesPerDay);
+    }
 }

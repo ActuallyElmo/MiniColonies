@@ -48,9 +48,10 @@ public class SimulationTaskManager : MonoBehaviour
         if (_taskQueue.Count == 0) return;
 
         _frameTimer.Restart();
-        float frameBudgetMilliseconds = Mathf.Max(
-            0.01f,
-            maxMillisecondsPerFrame);
+        float frameBudgetMilliseconds = float.IsNaN(maxMillisecondsPerFrame) ||
+                                         float.IsInfinity(maxMillisecondsPerFrame)
+            ? 5f
+            : Mathf.Max(0.01f, maxMillisecondsPerFrame);
 
         while (_taskQueue.Count > 0 &&
                _frameTimer.Elapsed.TotalMilliseconds < frameBudgetMilliseconds)

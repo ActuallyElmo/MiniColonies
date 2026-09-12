@@ -12,8 +12,23 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 4c6951d00d5c44640b9871bee25f3de4, type: 3}
   m_Name: TestResourceTransportVehicle
   m_EditorClassIdentifier: 
-  vehicleName: 
-  maximumVehicleSpeed: 0
+  trafficProfileKey: Box Truck
+  trafficCapabilities: 1
+  trafficRoadPermissions: 1
+  vehicleName: Box Truck
+  vehiclePrefab: {fileID: 8014586108714606, guid: c13e13eb0cb929047bdfd87bfc48cca0, type: 3}
+  vehicleIcon: {fileID: 0}
+  maximumVehicleSpeed: 1
   isLongVehicle: 0
   isOffroadVehicle: 0
-  transportableResources: []
+  vehicleLengthUnits: 0.26
+  minimumFollowingGapUnits: 0.1
+  accelerationUnitsPerSecondSquared: 0.7
+  decelerationUnitsPerSecondSquared: 0.5
+  emergencyDecelerationUnitsPerSecondSquared: 0.5
+  desiredTimeHeadwaySeconds: 0.01
+  driverReactionTimeSeconds: 0.25
+  maximumJerkUnitsPerSecondCubed: 10
+  vehicleSpaceUsed: 4
+  vehicleCapacity: 70
+  transportableResources: 00000000010000000200000003000000

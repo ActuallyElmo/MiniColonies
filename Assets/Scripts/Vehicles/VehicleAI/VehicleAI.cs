@@ -4,7 +4,7 @@ using System.Collections.Generic;
 
 public class VehicleAI : MonoBehaviour
 {
-    public enum VehicleState { Idle, Outbound, Inbound }
+    public enum VehicleState { Idle, Outbound, Inbound, AtDestination }
     
     [Header("State Data")]
     public VehicleState currentState = VehicleState.Idle;
@@ -55,10 +55,24 @@ public class VehicleAI : MonoBehaviour
     private Building _assignedPopFactory;
     private int _assignedPopCount;
     private bool _assignedPopsDelivered;
+    private bool _popReturnRequested;
     private int _returnHomeRouteFailures;
+
+    [Header("Resource Transport Assignment")]
+    [SerializeField] private bool hasAssignedResourceType;
+    [SerializeField] private ResourceType assignedResourceType;
+    [SerializeField] private int assignedResourceAmount;
+    private Building assignedResourceFactory;
+    private bool hasPendingResourceAssignment;
+    private ResourceType pendingResourceType;
+    private bool pendingResourceAssigned;
 
     public VehicleSimulationId SimulationId => simulationId;
     public int AssignedPopCount => _assignedPopCount;
+    public bool HasAssignedResourceType => hasAssignedResourceType;
+    public ResourceType AssignedResourceType => assignedResourceType;
+    public int AssignedResourceAmount => assignedResourceAmount;
+    public bool HasAssignedResourceCargo => assignedResourceAmount > 0;
     public bool CanReceivePopTransportAssignment =>
         currentState == VehicleState.Idle &&
         !isConveyorMoving &&
@@ -83,6 +97,54 @@ public class VehicleAI : MonoBehaviour
         homeBuilding = home;
         vehicleData = data;
         gameObject.SetActive(false); 
+    }
+
+    internal void SetAssignedResourceType(ResourceType resourceType)
+    {
+        if (currentState != VehicleState.Idle ||
+            isConveyorMoving ||
+            assignedResourceAmount > 0)
+        {
+            pendingResourceType = resourceType;
+            pendingResourceAssigned = true;
+            hasPendingResourceAssignment = true;
+            return;
+        }
+
+        assignedResourceType = resourceType;
+        hasAssignedResourceType = true;
+    }
+
+    internal void ClearAssignedResourceType()
+    {
+        if (currentState != VehicleState.Idle ||
+            isConveyorMoving ||
+            assignedResourceAmount > 0)
+        {
+            pendingResourceAssigned = false;
+            hasPendingResourceAssignment = true;
+            return;
+        }
+
+        hasAssignedResourceType = false;
+        assignedResourceAmount = 0;
+        assignedResourceFactory = null;
+    }
+
+    internal void AssignResourceCargo(Building destination, ResourceType type, int amount)
+    { assignedResourceFactory = destination; assignedResourceType = type; hasAssignedResourceType = true; assignedResourceAmount = Mathf.Max(0, amount); }
+
+    private void ApplyPendingResourceAssignment()
+    {
+        if (!hasPendingResourceAssignment) return;
+
+        hasAssignedResourceType = pendingResourceAssigned;
+        if (pendingResourceAssigned)
+        {
+            assignedResourceType = pendingResourceType;
+        }
+
+        hasPendingResourceAssignment = false;
     }
 
     public Vector3 GetPathingOrigin()
@@ -210,6 +272,7 @@ public class VehicleAI : MonoBehaviour
 
     public void RecallAndDeactivate()
     {
+        ReturnResourceCargoToHome();
         if (ConveyorTrafficManager.Instance != null)
         {
             ConveyorTrafficManager.Instance.LeaveTraffic(this);
@@ -233,6 +296,7 @@ public class VehicleAI : MonoBehaviour
         _pendingNetwork = null;
         _hasPendingAssignment = false;
         hasConveyorVisualPose = false;
+        ApplyPendingResourceAssignment();
 
         if (homeBuilding != null)
         {
@@ -244,6 +308,55 @@ public class VehicleAI : MonoBehaviour
         ReleasePopDeliveryAssignment();
         StopAllCoroutines();
         gameObject.SetActive(false); 
+    }
+
+    private void ReturnResourceCargoToHome()
+    {
+        if (assignedResourceFactory != null)
+        {
+            assignedResourceFactory.ReleaseIncomingResourceReservation(this);
+        }
+
+        int amount = assignedResourceAmount;
+        assignedResourceAmount = 0;
+        assignedResourceFactory = null;
+        if (amount > 0 && homeBuilding != null)
+        {
+            homeBuilding.AddFactoryResourceAllowOverfill(
+                assignedResourceType,
+                amount);
+        }
+    }
+
+    private void OnDisable()
+    {
+        if (vehicleData is ResourceTransportVehicleData)
+        {
+            if (isConveyorMoving && ConveyorTrafficManager.Instance != null)
+            {
+                ConveyorTrafficManager.Instance.LeaveTraffic(this);
+            }
+
+            ReturnResourceCargoToHome();
+            if (currentState != VehicleState.Idle)
+            {
+                currentState = VehicleState.Idle;
+                targetBuilding = null;
+                _activeNetwork = null;
+                _pendingTargetBuilding = null;
+                _pendingNetwork = null;
+                _hasPendingAssignment = false;
+                ApplyPendingResourceAssignment();
+            }
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (vehicleData is ResourceTransportVehicleData)
+        {
+            ReturnResourceCargoToHome();
+        }
     }
 
     public void RequestConveyorRerouteAfterGraphRebuild()
@@ -262,6 +375,13 @@ public class VehicleAI : MonoBehaviour
             _assignedPopFactory != null &&
             _assignedPopsDelivered)
         {
+            if (!_popReturnRequested)
+            {
+                // Delivered population vehicles wait at the factory until
+                // that specific shift releases them.
+                return;
+            }
+
             if (wasConveyorMoving)
             {
                 ForceConveyorReroute();
@@ -624,8 +744,51 @@ public class VehicleAI : MonoBehaviour
     {
         if (currentState == VehicleState.Outbound)
         {
+            if (vehicleData is ResourceTransportVehicleData && assignedResourceAmount > 0)
+            {
+                int amount = assignedResourceAmount;
+                bool delivered = targetBuilding != null &&
+                    targetBuilding.ReceiveIncomingResource(
+                        this,
+                        assignedResourceType,
+                        amount);
+                if (delivered)
+                {
+                    assignedResourceAmount = 0;
+                    assignedResourceFactory = null;
+                }
+                else
+                {
+                    ReturnResourceCargoToHome();
+                }
+            }
             MarkPopDeliveryArrived();
-            StartCoroutine(WaitAtTarget());
+            if (vehicleData is PopTransportVehicleData)
+            {
+                bool usefulAtFactory =
+                    _assignedPopFactory != null &&
+                    _assignedPopFactory
+                        .ShouldKeepPopTransportVehicleAtFactory(this);
+                if (!usefulAtFactory)
+                {
+                    _popReturnRequested = true;
+                    if (!isConveyorMoving &&
+                        (currentState == VehicleState.Outbound ||
+                         currentState == VehicleState.AtDestination))
+                    {
+                        ReturnHome();
+                    }
+                    return;
+                }
+
+                currentState = VehicleState.AtDestination;
+            }
+
+            if (currentState == VehicleState.Outbound ||
+                currentState == VehicleState.AtDestination)
+            {
+                StartCoroutine(WaitAtTarget());
+            }
         }
         else if (currentState == VehicleState.Inbound) StartCoroutine(WaitAtHome());
     }
@@ -688,7 +851,16 @@ public class VehicleAI : MonoBehaviour
     {
         yield return new WaitForSeconds(3f);
 
-        if (currentState == VehicleState.Outbound)
+        bool resourceVehicleFinishedWaiting =
+            currentState == VehicleState.Outbound &&
+            !(vehicleData is PopTransportVehicleData);
+        bool releasedPopVehicleFinishedWaiting =
+            (currentState == VehicleState.AtDestination ||
+             currentState == VehicleState.Outbound) &&
+            vehicleData is PopTransportVehicleData &&
+            _popReturnRequested;
+        if (resourceVehicleFinishedWaiting ||
+            releasedPopVehicleFinishedWaiting)
         {
             ReturnHome();
         }
@@ -712,6 +884,19 @@ public class VehicleAI : MonoBehaviour
             }
 
             RecallAndDeactivate();
+            yield break;
+        }
+
+        // Resource trucks must be reassigned on every return trip. Their
+        // previous destination is only a completed delivery and must not be
+        // reused without loading a fresh cargo amount.
+        if (vehicleData is ResourceTransportVehicleData)
+        {
+            RecallAndDeactivate();
+            if (homeBuilding != null)
+            {
+                homeBuilding.RequestResourceTransportDispatch();
+            }
             yield break;
         }
 
@@ -867,7 +1052,27 @@ public class VehicleAI : MonoBehaviour
         _assignedPopFactory = factory;
         _assignedPopCount = Mathf.Max(0, popCount);
         _assignedPopsDelivered = false;
+        _popReturnRequested = false;
         _returnHomeRouteFailures = 0;
+    }
+
+    public void ReleasePopDeliveryFromFactory(
+        Building factory,
+        bool returnHome = true)
+    {
+        if (factory == null || _assignedPopFactory != factory)
+        {
+            return;
+        }
+
+        _popReturnRequested = true;
+        if (returnHome &&
+            (currentState == VehicleState.Outbound ||
+             currentState == VehicleState.AtDestination) &&
+            !isConveyorMoving)
+        {
+            ReturnHome();
+        }
     }
 
     private void MarkPopDeliveryArrived()
@@ -880,8 +1085,8 @@ public class VehicleAI : MonoBehaviour
             return;
         }
 
-        _assignedPopFactory.MarkIncomingPopsDelivered(this);
         _assignedPopsDelivered = true;
+        _assignedPopFactory.MarkIncomingPopsDelivered(this);
     }
 
     private void ReleasePopDeliveryAssignment()
@@ -896,6 +1101,7 @@ public class VehicleAI : MonoBehaviour
         _assignedPopFactory = null;
         _assignedPopCount = 0;
         _assignedPopsDelivered = false;
+        _popReturnRequested = false;
     }
 
     private bool TryGetRoutePorts(
@@ -905,26 +1111,8 @@ public class VehicleAI : MonoBehaviour
         out Vector2Int exitPort,
         out Vector2Int entryPort)
     {
-        exitPort = default;
-        entryPort = default;
-        if (source == null || destination == null || _activeNetwork == null) return false;
-
-        if (!source.TryGetClosestPort(
-                PortFlowDirection.Exit,
-                _activeNetwork,
-                destinationReferenceCell,
-                vehicleData,
-                out exitPort))
-        {
-            return false;
-        }
-
-        return destination.TryGetClosestPort(
-            PortFlowDirection.Entry,
-            _activeNetwork,
-            exitPort,
-            vehicleData,
-            out entryPort);
+        return new VehicleDeliveryRouting(vehicleData).TryFindPorts(
+            source, destination, _activeNetwork, out exitPort, out entryPort, out _);
     }
 
     private Vector3 GetWorldPositionOfPort(Vector2Int portCell)

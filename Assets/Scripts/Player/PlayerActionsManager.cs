@@ -59,13 +59,23 @@ public class PlayerActionManager : MonoBehaviour
 
     private void Update()
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
+
         HandleBuildingSelectionInput();
 
         if (!Input.GetMouseButtonDown(1)) return;
 
         // Vehicle dragging gets first refusal so right-click cancels only the
         // drag preview and leaves the currently inspected building selected.
-        if (PopTransportVehicleDragSource.TryCancelActiveDrag())
+        if (ResourceTransportVehicleDragSource.TryCancelActiveDrag() ||
+            PopTransportVehicleDragSource.TryCancelActiveDrag())
+        {
+            return;
+        }
+
+        // The factory priority control owns right-click so it can lower the
+        // value without clearing the currently selected building.
+        if (IsPointerOverFactoryPriorityButton())
         {
             return;
         }
@@ -144,6 +154,32 @@ public class PlayerActionManager : MonoBehaviour
         BuildingSelectionChanged?.Invoke(SelectedBuilding);
     }
 
+    private static bool IsPointerOverFactoryPriorityButton()
+    {
+        EventSystem eventSystem = EventSystem.current;
+        if (eventSystem == null) return false;
+
+        var pointerData = new PointerEventData(eventSystem)
+        {
+            position = Input.mousePosition
+        };
+        var hits = new List<RaycastResult>();
+        eventSystem.RaycastAll(pointerData, hits);
+
+        for (int i = 0; i < hits.Count; i++)
+        {
+            GameObject hitObject = hits[i].gameObject;
+            if (hitObject != null &&
+                hitObject.GetComponentInParent<FactoryPriorityButton>() !=
+                null)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void UpdateGridShaderMode()
     {
         // Define which modes should trigger the colorful terrain analysis grid
@@ -157,6 +193,8 @@ public class PlayerActionManager : MonoBehaviour
 
     public void ChangeCurrentRoadType()
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
+
         if (roadTypes == null || roadTypes.Count == 0)
         {
             Debug.Log("No road types are configured.");
@@ -177,6 +215,8 @@ public class PlayerActionManager : MonoBehaviour
 
     public void ChangeCurrentBuildingType()
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
+
         if (buildingTypes == null || buildingTypes.Count == 0)
         {
             currentBuildingType = 0;
@@ -225,6 +265,8 @@ public class PlayerActionManager : MonoBehaviour
 
     private void SetMode(PlayerMode newMode, string logMessage)
     {
+        if (newMode != PlayerMode.None && !PlayerViewModeManager.AllowsGameplayActions) return;
+
         bool changed = currentMode != newMode;
         currentMode = newMode;
         Debug.Log(logMessage);
@@ -240,6 +282,13 @@ public class PlayerActionManager : MonoBehaviour
 
             ModeChanged?.Invoke(currentMode);
         }
+    }
+
+    public void CancelAllActions()
+    {
+        SetModeNone();
+        SelectedBuilding = null;
+        BuildingSelectionChanged?.Invoke(null);
     }
 
     public RoadType SelectedRoadType 

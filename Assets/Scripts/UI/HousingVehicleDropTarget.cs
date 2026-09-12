@@ -28,6 +28,20 @@ public sealed class HousingVehicleDropTarget : MonoBehaviour, IDropHandler
     private Building.VehicleAssignmentResult displayedResult;
     private bool hasDisplayedResult;
 
+    public void Configure(
+        HousingBuildingInfoPanel panel,
+        GameObject validHighlighter,
+        GameObject fullHighlighter,
+        GameObject invalidHighlighter)
+    {
+        housingPanel = panel;
+        areaHighlighter = validHighlighter;
+        notEnoughSpaceHighlighter = fullHighlighter;
+        wrongVehicleTypeHighlighter = invalidHighlighter;
+        ResolveFallbackHighlighters();
+        HideAllHighlighters();
+    }
+
     private void Awake()
     {
         if (housingPanel == null)
@@ -58,6 +72,8 @@ public sealed class HousingVehicleDropTarget : MonoBehaviour, IDropHandler
 
     public void OnDrop(PointerEventData eventData)
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
+
         PopTransportVehicleDragSource source = eventData.pointerDrag != null
             ? eventData.pointerDrag.GetComponent<PopTransportVehicleDragSource>()
             : null;

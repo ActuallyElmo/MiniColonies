@@ -6,13 +6,14 @@ public sealed class GameTimeManager : MonoBehaviour
     public const int HoursPerDay = 24;
 
     private const float MinimumMinutesPerDay = 0.01f;
+    private const float DefaultRealMinutesPerDay = 10f;
 
     public static GameTimeManager Instance { get; private set; }
 
     [Header("Day Length")]
     [SerializeField, Min(MinimumMinutesPerDay)]
     [Tooltip("How many real-life minutes it takes for 24 in-game hours to pass.")]
-    private float realMinutesPerDay = 10f;
+    private float realMinutesPerDay = DefaultRealMinutesPerDay;
 
     [SerializeField]
     [Tooltip("When enabled, game time continues while Time.timeScale is zero.")]
@@ -41,7 +42,7 @@ public sealed class GameTimeManager : MonoBehaviour
     public float RealMinutesPerDay
     {
         get => realMinutesPerDay;
-        set => realMinutesPerDay = Mathf.Max(MinimumMinutesPerDay, value);
+        set => realMinutesPerDay = SanitizeDayLength(value);
     }
 
     public bool UseUnscaledTime
@@ -112,9 +113,16 @@ public sealed class GameTimeManager : MonoBehaviour
 
     private void OnValidate()
     {
-        realMinutesPerDay = Mathf.Max(MinimumMinutesPerDay, realMinutesPerDay);
+        realMinutesPerDay = SanitizeDayLength(realMinutesPerDay);
         startingDay = Mathf.Max(1, startingDay);
         startingHour = Mathf.Clamp(startingHour, 0, HoursPerDay - 1);
+    }
+
+    private static float SanitizeDayLength(float value)
+    {
+        return float.IsNaN(value) || float.IsInfinity(value)
+            ? DefaultRealMinutesPerDay
+            : Mathf.Max(MinimumMinutesPerDay, value);
     }
 
     private void OnDestroy()

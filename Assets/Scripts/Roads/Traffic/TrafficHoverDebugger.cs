@@ -19,6 +19,12 @@ public class TrafficHoverDebugger : MonoBehaviour
     {
         if (!Application.isPlaying) return;
 
+        if (!PlayerViewModeManager.AllowsGameplayActions)
+        {
+            ClearHover();
+            return;
+        }
+
         HandleMouseHover();
     }
 
@@ -205,10 +211,26 @@ public class TrafficHoverDebugger : MonoBehaviour
         _activePointers.Add(sphere);
     }
 
+    public void ClearHover()
+    {
+        _currentHoveredEdge = null;
+        ClearVisuals();
+    }
+
     private void ClearVisuals()
     {
-        foreach (var lr in _activeLines) if (lr != null) Destroy(lr.gameObject);
-        foreach (var ptr in _activePointers) if (ptr != null) Destroy(ptr.gameObject);
+        foreach (var lr in _activeLines)
+        {
+            if (lr == null) continue;
+            lr.gameObject.SetActive(false);
+            Destroy(lr.gameObject);
+        }
+        foreach (var ptr in _activePointers)
+        {
+            if (ptr == null) continue;
+            ptr.SetActive(false);
+            Destroy(ptr);
+        }
         
         _activeLines.Clear();
         _activePointers.Clear();

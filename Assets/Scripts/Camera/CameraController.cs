@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 public class CameraController : MonoBehaviour
 {
@@ -18,8 +20,19 @@ public class CameraController : MonoBehaviour
 
     [Header("Zoom Settings")]
     public float zoomSensitivity = 10f;
+    [Tooltip("Normal view: minimum orthographic size (most zoomed in).")]
     public float minZoom = 5f;
+    [Tooltip("Normal view: maximum orthographic size (most zoomed out).")]
     public float maxZoom = 20f;
+    [Header("View Mode Zoom Ranges")]
+    [Tooltip("Overview view: minimum orthographic size (most zoomed in).")]
+    [Min(0.01f)] public float overviewMinZoom = 12f;
+    [Tooltip("Overview view: maximum orthographic size (most zoomed out).")]
+    [Min(0.01f)] public float overviewMaxZoom = 40f;
+    [Tooltip("Traffic view: minimum orthographic size (most zoomed in).")]
+    [Min(0.01f)] public float trafficMinZoom = 8f;
+    [Tooltip("Traffic view: maximum orthographic size (most zoomed out).")]
+    [Min(0.01f)] public float trafficMaxZoom = 30f;
     public float zoomSmoothTime = 0.1f;
     [Range(0f, 1f)]
     [Tooltip("How strongly zooming moves toward the mouse. Zooming out moves away by the same amount.")]
@@ -46,6 +59,11 @@ public class CameraController : MonoBehaviour
     private Vector3 zoomBiasScreenPosition;
     private bool hasZoomBiasPosition;
     private WorldManager worldManager;
+    private PlayerViewModeManager subscribedViewModeManager;
+    private float activeMinZoom;
+    private float activeMaxZoom;
+    private readonly List<RaycastResult> uiRaycastResults =
+        new List<RaycastResult>();
 
     /// <summary>
     /// Current camera zoom from 0 to 100. A value of 100 is fully zoomed in.
@@ -56,6 +74,11 @@ public class CameraController : MonoBehaviour
     /// Current camera zoom normalized from 0 to 1. A value of 1 is fully zoomed in.
     /// </summary>
     public float CurrentZoom01 => currentZoomPercentage * 0.01f;
+
+    public float ActiveMinZoom => activeMinZoom;
+    public float ActiveMaxZoom => activeMaxZoom;
+    public float CurrentMovementSpeed =>
+        GetMovementSpeed(cam != null ? cam.orthographicSize : minZoom);
 
     /// <summary>
     /// Raised whenever the rendered camera zoom percentage changes.
@@ -75,8 +98,9 @@ public class CameraController : MonoBehaviour
         }
 
         NormalizeZoomRange();
+        SetActiveZoomRange(PlayerViewMode.Normal, false);
         targetZoom = cam.orthographicSize;
-        targetZoom = Mathf.Clamp(targetZoom, minZoom, maxZoom);
+        targetZoom = Mathf.Clamp(targetZoom, activeMinZoom, activeMaxZoom);
 
         PublishZoomPercentage(true);
     }
@@ -84,6 +108,7 @@ public class CameraController : MonoBehaviour
     private void Start()
     {
         worldManager = WorldManager.Instance;
+        SubscribeToViewModes();
     }
 
     void Update()
@@ -100,11 +125,12 @@ public class CameraController : MonoBehaviour
         float vertical = Input.GetAxisRaw("Vertical");
         Vector3 inputDir = new Vector3(horizontal, 0, vertical).normalized;
 
-        // Movement speed increases as the camera zooms out.
-        float zoomedOut01 = 1f - CurrentZoom01;
+        // Movement depends on the visible camera scale, not the active view
+        // mode's limits. The same orthographic size must always feel the same.
+        float zoomedOut01 = GetMovementZoomedOut01(cam.orthographicSize);
         
         // Lerp uses that 0 to 1 percentage to find the exact speed we need.
-        float currentTargetSpeed = Mathf.Lerp(minSpeed, maxSpeed, zoomedOut01);
+        float currentTargetSpeed = GetMovementSpeed(cam.orthographicSize);
 
         // 2. Calculate the exact velocity we WANT right now based on input
         Vector3 targetVelocity = inputDir * currentTargetSpeed;
@@ -126,10 +152,10 @@ public class CameraController : MonoBehaviour
     {
         float scroll = Input.GetAxis("Mouse ScrollWheel");
 
-        if (Mathf.Abs(scroll) > 0f)
+        if (Mathf.Abs(scroll) > 0f && !IsPointerOverBuildingPanel())
         {
             targetZoom -= scroll * zoomSensitivity;
-            targetZoom = Mathf.Clamp(targetZoom, minZoom, maxZoom);
+            targetZoom = Mathf.Clamp(targetZoom, activeMinZoom, activeMaxZoom);
             zoomBiasScreenPosition = Input.mousePosition;
             hasZoomBiasPosition = true;
         }
@@ -160,9 +186,34 @@ public class CameraController : MonoBehaviour
             transform.position += (mousePointBeforeZoom - mousePointAfterZoom) * mouseBias;
             transform.position = ClampToWorldBounds(
                 transform.position,
-                Mathf.InverseLerp(minZoom, maxZoom, newZoom)
+                GetMovementZoomedOut01(newZoom)
             );
         }
+    }
+
+    private bool IsPointerOverBuildingPanel()
+    {
+        EventSystem eventSystem = EventSystem.current;
+        if (eventSystem == null) return false;
+
+        var pointerData = new PointerEventData(eventSystem)
+        {
+            position = Input.mousePosition
+        };
+        uiRaycastResults.Clear();
+        eventSystem.RaycastAll(pointerData, uiRaycastResults);
+
+        for (int i = 0; i < uiRaycastResults.Count; i++)
+        {
+            GameObject hitObject = uiRaycastResults[i].gameObject;
+            if (hitObject != null &&
+                hitObject.GetComponentInParent<BuildingInfoPanel>() != null)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool TryGetGroundPoint(Vector3 screenPosition, out Vector3 groundPoint)
@@ -209,10 +260,31 @@ public class CameraController : MonoBehaviour
     /// </summary>
     public float GetZoomPercentage(float orthographicSize)
     {
-        if (Mathf.Approximately(minZoom, maxZoom)) return 100f;
+        if (Mathf.Approximately(activeMinZoom, activeMaxZoom)) return 100f;
 
-        float zoomedOut01 = Mathf.InverseLerp(minZoom, maxZoom, orthographicSize);
+        float zoomedOut01 = Mathf.InverseLerp(
+            activeMinZoom,
+            activeMaxZoom,
+            orthographicSize);
         return (1f - zoomedOut01) * 100f;
+    }
+
+    /// <summary>
+    /// Returns camera movement speed for a visible orthographic size. This uses
+    /// the Normal range as a shared reference so view modes cannot change speed
+    /// without changing the camera's actual zoom.
+    /// </summary>
+    public float GetMovementSpeed(float orthographicSize)
+    {
+        return Mathf.Lerp(
+            minSpeed,
+            maxSpeed,
+            GetMovementZoomedOut01(orthographicSize));
+    }
+
+    private float GetMovementZoomedOut01(float orthographicSize)
+    {
+        return Mathf.InverseLerp(minZoom, maxZoom, orthographicSize);
     }
 
     private void PublishZoomPercentage(bool forceNotification = false)
@@ -237,13 +309,72 @@ public class CameraController : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (subscribedViewModeManager != null)
+            subscribedViewModeManager.ViewModeChanged -= HandleViewModeChanged;
         if (Instance == this) Instance = null;
     }
 
     private void NormalizeZoomRange()
     {
-        minZoom = Mathf.Max(0.01f, minZoom);
-        maxZoom = Mathf.Max(minZoom, maxZoom);
+        NormalizeZoomRange(ref minZoom, ref maxZoom);
+        NormalizeZoomRange(ref overviewMinZoom, ref overviewMaxZoom);
+        NormalizeZoomRange(ref trafficMinZoom, ref trafficMaxZoom);
+    }
+
+    private void SubscribeToViewModes()
+    {
+        if (subscribedViewModeManager != null)
+            subscribedViewModeManager.ViewModeChanged -= HandleViewModeChanged;
+
+        subscribedViewModeManager = PlayerViewModeManager.Instance;
+        if (subscribedViewModeManager == null)
+        {
+            SetActiveZoomRange(PlayerViewMode.Normal, true);
+            return;
+        }
+
+        subscribedViewModeManager.ViewModeChanged += HandleViewModeChanged;
+        SetActiveZoomRange(subscribedViewModeManager.CurrentViewMode, true);
+    }
+
+    private void HandleViewModeChanged(PlayerViewMode mode)
+    {
+        SetActiveZoomRange(mode, true);
+    }
+
+    private void SetActiveZoomRange(PlayerViewMode mode, bool clampCamera)
+    {
+        NormalizeZoomRange();
+        switch (mode)
+        {
+            case PlayerViewMode.Overview:
+                activeMinZoom = overviewMinZoom;
+                activeMaxZoom = overviewMaxZoom;
+                break;
+            case PlayerViewMode.Traffic:
+                activeMinZoom = trafficMinZoom;
+                activeMaxZoom = trafficMaxZoom;
+                break;
+            default:
+                activeMinZoom = minZoom;
+                activeMaxZoom = maxZoom;
+                break;
+        }
+
+        if (!clampCamera || cam == null) return;
+
+        targetZoom = Mathf.Clamp(targetZoom, activeMinZoom, activeMaxZoom);
+        // Let HandleZoom ease the rendered camera toward the newly allowed
+        // range. This makes view changes feel like a natural centered zoom.
+        zoomDampVelocity = 0f;
+        hasZoomBiasPosition = false;
+        PublishZoomPercentage(true);
+    }
+
+    private static void NormalizeZoomRange(ref float minimum, ref float maximum)
+    {
+        minimum = Mathf.Max(0.01f, minimum);
+        maximum = Mathf.Max(minimum, maximum);
     }
 
     private static void NormalizeBounds(

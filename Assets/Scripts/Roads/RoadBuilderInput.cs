@@ -31,6 +31,12 @@ public class RoadBuilderInput : MonoBehaviour
 
     private void HandleInput()
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions)
+        {
+            TryCancelActivePlacement();
+            return;
+        }
+
         if (PlayerActionManager.Instance == null || RoadSystemBackend.Instance == null || WorldManager.Instance == null) return;
 
         PlayerMode currentMode = PlayerActionManager.Instance.currentMode;

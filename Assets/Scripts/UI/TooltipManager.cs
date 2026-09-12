@@ -60,6 +60,7 @@ public sealed class TooltipManager : MonoBehaviour
     /// </summary>
     public static void Show(string information)
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
         GetOrCreate().ShowInternal(information, null, false);
     }
 
@@ -69,6 +70,7 @@ public sealed class TooltipManager : MonoBehaviour
     /// </summary>
     public static void Show(string information, Object owner)
     {
+        if (!PlayerViewModeManager.AllowsGameplayActions) return;
         GetOrCreate().ShowInternal(information, owner, owner != null);
     }
 

@@ -1,0 +1,47 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 28162a35ccdf9e749b24a1b445e9f1a7, type: 3}
+  m_Name: TestProductionBuilding 1
+  m_EditorClassIdentifier: 
+  buildingName: Basci Factory
+  prefab: {fileID: 6105289989881189314, guid: 99d5f37bc95b09a47830cd86cc99e5f0, type: 3}
+  footprint:
+  - localPosition: {x: 1, y: 0}
+    isPort: 1
+    portType: 3
+  - localPosition: {x: 2, y: 0}
+    isPort: 1
+    portType: 8
+  - localPosition: {x: 0, y: 0}
+    isPort: 0
+    portType: 0
+  - localPosition: {x: 1, y: 1}
+    isPort: 0
+    portType: 0
+  - localPosition: {x: 2, y: 1}
+    isPort: 0
+    portType: 0
+  - localPosition: {x: 0, y: 1}
+    isPort: 1
+    portType: 6
+  industrialVehiclesStorageSpace: 12
+  shiftDuration: 6
+  popRequiredForMaxEfficiency: 10
+  resources:
+  - resourceType: 0
+    storageCapacity: 1500
+    amountAtMaximumEfficiency: 120
+    direction: 1
+  - resourceType: 1
+    storageCapacity: 1500
+    amountAtMaximumEfficiency: 120
+    direction: 1

@@ -50,6 +50,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Assets\TutorialInfo\Scripts\Editor\ReadmeEditor.cs" />
+    <Compile Include="Assets\Editor\FactorySchedulePanelSceneBuilder.cs" />
+    <Compile Include="Assets\Editor\HousingPanelSceneBuilder.cs" />
+    <Compile Include="Assets\Editor\IndustrialVehicleTabSceneBuilder.cs" />
+    <Compile Include="Assets\Editor\FactoryStatusTabSceneBuilder.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="Library\PackageCache\com.unity.collab-proxy@0b1559bcd34e\Lib\Editor\Localization\cm-help.zh-Hans.txt" />

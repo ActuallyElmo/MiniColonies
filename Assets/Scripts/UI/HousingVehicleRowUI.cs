@@ -11,6 +11,7 @@ using UnityEngine.UI;
 public sealed class HousingVehicleRowUI : MonoBehaviour
 {
     [Header("Vehicle Row Fields")]
+    [SerializeField] private Image vehicleIcon;
     [SerializeField] private TMP_Text vehicleNameText;
     [SerializeField] private TMP_Text vehicleStatusText;
     [SerializeField] private TMP_Text vehicleCapacityText;
@@ -18,6 +19,87 @@ public sealed class HousingVehicleRowUI : MonoBehaviour
     [SerializeField] private Button removeVehicleButton;
 
     public VehicleAI Vehicle { get; private set; }
+
+    private void Awake()
+    {
+        PrepareForHousingListLayout();
+        ResolveVehicleIcon();
+        ApplyPanelFont();
+    }
+
+    private void ResolveVehicleIcon()
+    {
+        if (vehicleIcon != null)
+        {
+            return;
+        }
+
+        Transform iconTransform = transform.Find("VehicleIcon");
+        if (iconTransform != null)
+        {
+            vehicleIcon = iconTransform.GetComponent<Image>();
+            return;
+        }
+
+        GameObject iconObject = new GameObject(
+            "VehicleIcon",
+            typeof(RectTransform),
+            typeof(CanvasRenderer),
+            typeof(Image),
+            typeof(LayoutElement));
+        iconObject.transform.SetParent(transform, false);
+        vehicleIcon = iconObject.GetComponent<Image>();
+        vehicleIcon.color = new Color32(110, 150, 205, 255);
+        vehicleIcon.raycastTarget = false;
+        vehicleIcon.preserveAspect = true;
+        LayoutElement layout = iconObject.GetComponent<LayoutElement>();
+        layout.preferredWidth = 20f;
+        layout.flexibleWidth = 0f;
+        layout.flexibleHeight = 1f;
+    }
+
+    /// <summary>
+    /// Gives older row instances a real layout height. The authored prefab's
+    /// LayoutElement is left untouched so editor changes remain authoritative.
+    /// </summary>
+    public void PrepareForHousingListLayout()
+    {
+        RectTransform rowRect = transform as RectTransform;
+        if (rowRect == null)
+        {
+            return;
+        }
+
+        LayoutElement layout = GetComponent<LayoutElement>();
+        if (layout == null)
+        {
+            layout = gameObject.AddComponent<LayoutElement>();
+            layout.minHeight = 28f;
+            layout.preferredHeight = 28f;
+            layout.flexibleHeight = 0f;
+            layout.flexibleWidth = 1f;
+        }
+    }
+
+    private void ApplyPanelFont()
+    {
+        HousingBuildingInfoPanel panel =
+            GetComponentInParent<HousingBuildingInfoPanel>(true);
+        TMP_FontAsset font = panel != null ? panel.PanelFont : null;
+        if (font == null)
+        {
+            return;
+        }
+
+        TMP_Text[] texts = GetComponentsInChildren<TMP_Text>(true);
+        for (int i = 0; i < texts.Length; i++)
+        {
+            if (texts[i] != null)
+            {
+                texts[i].font = font;
+            }
+        }
+    }
 
     /// <summary>
     /// Connects this row to a vehicle. The row does not own the vehicle and
@@ -134,6 +216,17 @@ public sealed class HousingVehicleRowUI : MonoBehaviour
 
     private void PopulateStaticFields()
     {
+        if (vehicleIcon != null)
+        {
+            PopTransportVehicleData iconData = Vehicle != null
+                ? Vehicle.vehicleData as PopTransportVehicleData
+                : null;
+            vehicleIcon.sprite = iconData != null
+                ? iconData.vehicleIcon
+                : null;
+            vehicleIcon.preserveAspect = true;
+        }
+
         if (Vehicle != null &&
             Vehicle.vehicleData is PopTransportVehicleData popVehicleData)
         {
@@ -211,6 +304,9 @@ public sealed class HousingVehicleRowUI : MonoBehaviour
 
             case VehicleAI.VehicleState.Inbound:
                 return "Returning";
+
+            case VehicleAI.VehicleState.AtDestination:
+                return "Arrived";
 
             default:
                 return "Parked";

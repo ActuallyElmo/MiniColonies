@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 public enum BuildingCategory
 {
@@ -46,6 +48,14 @@ public sealed class BuildingPanelOverlayManager : MonoBehaviour
     private PlayerActionManager subscribedPlayerActionManager;
     private BuildingSystemBackend subscribedBuildingSystem;
 
+    // A panel follows its selected building until the player drags the panel
+    // background.  This state intentionally lives here (rather than on the
+    // panel presenters) so housing and industrial panels behave identically.
+    private bool activePanelDetached;
+    private bool panelDragActive;
+    private Vector3 panelDragStartWorldPosition;
+    private Vector3 panelDragStartPointerWorldPosition;
+
     public Building SelectedBuilding => selectedBuilding;
     public bool IsShowingPanel =>
         selectedBuilding != null &&
@@ -56,6 +66,7 @@ public sealed class BuildingPanelOverlayManager : MonoBehaviour
     private void Awake()
     {
         HideAllPanels();
+        ConfigurePanelDragHandles();
     }
 
     private void Start()
@@ -86,19 +97,24 @@ public sealed class BuildingPanelOverlayManager : MonoBehaviour
             return;
         }
 
-        if (PlayerActionManager.Instance == null ||
+        if (!PlayerViewModeManager.AllowsGameplayActions ||
+            PlayerActionManager.Instance == null ||
             PlayerActionManager.Instance.currentMode != PlayerMode.None)
         {
             HideCurrentPanel();
             return;
         }
 
-        UpdateActivePanelPosition();
+        if (!activePanelDetached)
+        {
+            UpdateActivePanelPosition();
+        }
     }
 
     public void ShowBuilding(Building building)
     {
         if (building == null ||
+            !PlayerViewModeManager.AllowsGameplayActions ||
             PlayerActionManager.Instance == null ||
             PlayerActionManager.Instance.currentMode != PlayerMode.None)
         {
@@ -122,6 +138,8 @@ public sealed class BuildingPanelOverlayManager : MonoBehaviour
 
         selectedBuilding = building;
         activeBinding = binding;
+        activePanelDetached = false;
+        panelDragActive = false;
         CacheBuildingRenderers(building);
 
         binding.panel.gameObject.SetActive(true);
@@ -142,8 +160,172 @@ public sealed class BuildingPanelOverlayManager : MonoBehaviour
 
         selectedBuilding = null;
         activeBinding = null;
+        activePanelDetached = false;
+        panelDragActive = false;
         selectedBuildingRenderers.Clear();
         HideAllPanels();
+    }
+
+    /// <summary>
+    /// Begins dragging the currently active panel.  Called by the drag handle
+    /// attached to the panel's empty background graphic.
+    /// </summary>
+    internal void BeginPanelDrag(
+        BuildingInfoPanel panel,
+        PointerEventData eventData)
+    {
+        if (panel == null || eventData == null ||
+            activeBinding == null || activeBinding.panel != panel ||
+            selectedBuilding == null)
+        {
+            return;
+        }
+
+        if (!TryGetPanelPositioningContext(
+                out RectTransform panelRect,
+                out RectTransform positioningRect,
+                out Camera canvasCamera))
+        {
+            return;
+        }
+
+        if (!RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                positioningRect,
+                eventData.position,
+                canvasCamera,
+                out panelDragStartPointerWorldPosition))
+        {
+            return;
+        }
+
+        activePanelDetached = true;
+        panelDragActive = true;
+        panelDragStartWorldPosition = panelRect.position;
+    }
+
+    /// <summary>Moves the detached panel while preserving the grab offset.</summary>
+    internal void DragActivePanel(PointerEventData eventData)
+    {
+        if (!panelDragActive || eventData == null ||
+            !TryGetPanelPositioningContext(
+                out RectTransform panelRect,
+                out RectTransform positioningRect,
+                out Camera canvasCamera))
+        {
+            return;
+        }
+
+        if (!RectTransformUtility.ScreenPointToWorldPointInRectangle(
+                positioningRect,
+                eventData.position,
+                canvasCamera,
+                out Vector3 pointerWorldPosition))
+        {
+            return;
+        }
+
+        panelRect.position = panelDragStartWorldPosition +
+            (pointerWorldPosition - panelDragStartPointerWorldPosition);
+        Canvas.ForceUpdateCanvases();
+        ClampPanelToScreen(panelRect, positioningRect, canvasCamera);
+    }
+
+    internal void EndPanelDrag()
+    {
+        panelDragActive = false;
+    }
+
+    private void ConfigurePanelDragHandles()
+    {
+        for (int i = 0; i < panelBindings.Count; i++)
+        {
+            BuildingInfoPanel panel = panelBindings[i]?.panel;
+            if (panel == null) continue;
+
+            Graphic background = FindPanelBackground(panel);
+            if (background == null)
+            {
+                Debug.LogWarning(
+                    $"Panel {panel.name} has no background Graphic; " +
+                    "panel dragging is unavailable.",
+                    panel);
+                continue;
+            }
+
+            BuildingPanelDragHandle handle =
+                background.GetComponent<BuildingPanelDragHandle>();
+            if (handle == null)
+            {
+                handle = background.gameObject.AddComponent<BuildingPanelDragHandle>();
+            }
+
+            handle.Initialize(this, panel);
+        }
+    }
+
+    private static Graphic FindPanelBackground(BuildingInfoPanel panel)
+    {
+        // Housing panels keep a legacy Background object for migration. The
+        // authored card is the visible, draggable surface and must win over
+        // that inactive legacy graphic.
+        Transform housingCard = panel.transform.Find("HousingPanelCard");
+        if (housingCard != null)
+        {
+            Graphic cardGraphic = housingCard.GetComponent<Graphic>();
+            if (cardGraphic != null && cardGraphic.raycastTarget)
+            {
+                return cardGraphic;
+            }
+        }
+
+        Transform namedBackground = panel.transform.Find("Background");
+        if (namedBackground != null)
+        {
+            Graphic namedGraphic = namedBackground.GetComponent<Graphic>();
+            if (namedGraphic != null && namedGraphic.raycastTarget)
+            {
+                return namedGraphic;
+            }
+        }
+
+        Graphic[] graphics = panel.GetComponentsInChildren<Graphic>(true);
+        for (int i = 0; i < graphics.Length; i++)
+        {
+            if (graphics[i] != null && graphics[i].raycastTarget)
+            {
+                return graphics[i];
+            }
+        }
+
+        return null;
+    }
+
+    private bool TryGetPanelPositioningContext(
+        out RectTransform panelRect,
+        out RectTransform positioningRect,
+        out Camera canvasCamera)
+    {
+        panelRect = activeBinding?.panel?.transform as RectTransform;
+        positioningRect = panelRect != null
+            ? panelRect.parent as RectTransform
+            : null;
+        if (positioningRect == null && overlayCanvas != null)
+        {
+            positioningRect = overlayCanvas.transform as RectTransform;
+        }
+
+        if (overlayCanvas == null && panelRect != null)
+        {
+            overlayCanvas = panelRect.GetComponentInParent<Canvas>();
+        }
+
+        canvasCamera = overlayCanvas != null &&
+            overlayCanvas.renderMode != RenderMode.ScreenSpaceOverlay
+                ? overlayCanvas.worldCamera
+                : null;
+
+        return panelRect != null && positioningRect != null &&
+            overlayCanvas != null;
     }
 
     private BuildingPanelBinding FindBinding(BuildingData buildingData)
@@ -507,6 +689,64 @@ public sealed class BuildingPanelOverlayManager : MonoBehaviour
         if (building == selectedBuilding)
         {
             HideCurrentPanel();
+        }
+    }
+}
+
+/// <summary>
+/// Receives drag events only from a panel's empty background graphic. Child
+/// controls (buttons, scroll views, tabs, etc.) keep their existing behavior.
+/// </summary>
+[DisallowMultipleComponent]
+public sealed class BuildingPanelDragHandle : MonoBehaviour,
+    IBeginDragHandler,
+    IDragHandler,
+    IEndDragHandler
+{
+    private BuildingPanelOverlayManager overlayManager;
+    private BuildingInfoPanel panel;
+    private bool dragging;
+
+    public void Initialize(
+        BuildingPanelOverlayManager manager,
+        BuildingInfoPanel ownerPanel)
+    {
+        overlayManager = manager;
+        panel = ownerPanel;
+    }
+
+    public void OnBeginDrag(PointerEventData eventData)
+    {
+        dragging = false;
+
+        // EventSystem bubbles drag events through parents.  Since this handle
+        // lives on the background behind the controls, explicitly require the
+        // original raycast to have hit the background itself; otherwise a
+        // drag that started on a button/scroll view could move the panel.
+        if (eventData == null ||
+            eventData.pointerPressRaycast.gameObject != gameObject)
+        {
+            return;
+        }
+
+        overlayManager?.BeginPanelDrag(panel, eventData);
+        dragging = true;
+    }
+
+    public void OnDrag(PointerEventData eventData)
+    {
+        if (dragging)
+        {
+            overlayManager?.DragActivePanel(eventData);
+        }
+    }
+
+    public void OnEndDrag(PointerEventData eventData)
+    {
+        if (dragging)
+        {
+            overlayManager?.EndPanelDrag();
+            dragging = false;
         }
     }
 }
