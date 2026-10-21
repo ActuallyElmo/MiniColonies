@@ -4,7 +4,7 @@ public sealed class TrafficSimulationClock
 {
     private readonly float _fixedDeltaSeconds;
     private readonly int _maxStepsPerFrame;
-    private float _accumulator;
+    private double _accumulator;
 
     public TrafficSimulationClock(
         float fixedDeltaSeconds = 0.05f,
@@ -15,10 +15,12 @@ public sealed class TrafficSimulationClock
     }
 
     public float FixedDeltaSeconds => _fixedDeltaSeconds;
-    public float InterpolationAlpha => Mathf.Clamp01(_accumulator / _fixedDeltaSeconds);
+    public float InterpolationAlpha => Mathf.Clamp01((float)(_accumulator / _fixedDeltaSeconds));
 
     public int Accumulate(float frameDeltaSeconds)
     {
+        if (float.IsNaN(frameDeltaSeconds) || float.IsInfinity(frameDeltaSeconds))
+            return 0;
         _accumulator += Mathf.Max(0f, frameDeltaSeconds);
         int steps = 0;
         while (_accumulator >= _fixedDeltaSeconds &&
@@ -30,7 +32,7 @@ public sealed class TrafficSimulationClock
 
         if (steps == _maxStepsPerFrame)
         {
-            _accumulator = Mathf.Min(_accumulator, _fixedDeltaSeconds);
+            _accumulator = System.Math.Min(_accumulator, _fixedDeltaSeconds);
         }
 
         return steps;

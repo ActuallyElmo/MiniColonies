@@ -1,0 +1,40 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 67f1555eee6543cbafebc738717e5b2b, type: 3}
+  m_Name: Concrete
+  m_EditorClassIdentifier: 
+  resourceType: 7
+  displayName: Concrete
+  shape: 1
+  depth: 0
+  unlimited: 0
+  depositGrowth: 0
+  depositCompactness: 1
+  depositIrregularity: 0.284
+  depositElongation: 4
+  depositBranchChance: 0.2
+  randomizeDepositDirection: 1
+  depositGrowthAngle: 0
+  terrainMaterial: {fileID: 2100000, guid: 57b9a0fd750d6124b93ba3a16a2cf78a, type: 2}
+  terrainTint: {r: 0.62, g: 0.59, b: 0.50999993, a: 1}
+  terrainTransitionStyle: 0
+  terrainBlendWidth: 0.396
+  terrainBlendAmount: 0.47
+  terrainBlendRandomness: 0.65
+  terrainBlendNoiseSize: 1
+  terrainEdgeRoundness: 0.125
+  terrainAppearanceVersion: 1
+  prefabVariants: []
+  depositPrefabChance: 0.1
+  prefabScaleRange: {x: 0.8, y: 1.2}
+  randomYaw: 1
+  prefabHeightOffset: 0

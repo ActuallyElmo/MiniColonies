@@ -33,8 +33,66 @@ public class PlayerActionManager : MonoBehaviour
 
     public event Action<PlayerMode> ModeChanged;
     public event Action<Building> BuildingSelectionChanged;
+    public event Action<MapResourceSource> ResourceSelectionChanged;
 
     public Building SelectedBuilding { get; private set; }
+    public MapResourceSource SelectedResource { get; private set; }
+    private BuildingSystemBackend subscribedBuildingSystem;
+    private WorldManager subscribedWorld;
+
+    private void Start()
+    {
+        subscribedBuildingSystem = BuildingSystemBackend.Instance;
+        if (subscribedBuildingSystem != null)
+            subscribedBuildingSystem.OnBuildingRemoved += HandleBuildingRemoved;
+        subscribedWorld = WorldManager.Instance;
+        if (subscribedWorld != null) subscribedWorld.ResourcesChanged += HandleResourcesChanged;
+    }
+
+    private void HandleResourcesChanged() => SelectResource(null);
+
+    private void HandleBuildingRemoved(Building building)
+    {
+        if (ReferenceEquals(SelectedBuilding, building)) SelectBuilding(null);
+    }
+
+    public void SelectBuilding(Building building)
+    {
+        if (building == null) building = null; // Normalize Unity's destroyed-object references.
+        if (building != null && (!building.isActiveAndEnabled ||
+            !PlayerViewModeManager.AllowsGameplayActions || currentMode != PlayerMode.None)) return;
+        ClearResourceSelection();
+        // Repeated world clicks still reopen a manually closed information panel.
+        SelectedBuilding = building;
+        BuildingSelectionChanged?.Invoke(SelectedBuilding);
+    }
+
+    public void SelectResource(MapResourceSource source)
+    {
+        if (source == null)
+        {
+            ClearResourceSelection();
+            return;
+        }
+        WorldManager world = WorldManager.Instance;
+        if (!PlayerViewModeManager.AllowsGameplayActions || currentMode != PlayerMode.None ||
+            world == null || world.IsGenerating || source.Definition == null || source.Cells.Count == 0 ||
+            !world.ResourceMap.TryGetSource(source.Cells[0], out var current) ||
+            !ReferenceEquals(current, source)) return;
+
+        SelectedBuilding = null;
+        BuildingSelectionChanged?.Invoke(null);
+        SelectedResource = source;
+        // Repeated clicks reopen a manually closed panel.
+        ResourceSelectionChanged?.Invoke(source);
+    }
+
+    private void ClearResourceSelection()
+    {
+        if (SelectedResource == null) return;
+        SelectedResource = null;
+        ResourceSelectionChanged?.Invoke(null);
+    }
 
     private void Awake()
     {
@@ -51,6 +109,9 @@ public class PlayerActionManager : MonoBehaviour
 
     private void OnDestroy()
     {
+        if (subscribedBuildingSystem != null)
+            subscribedBuildingSystem.OnBuildingRemoved -= HandleBuildingRemoved;
+        if (subscribedWorld != null) subscribedWorld.ResourcesChanged -= HandleResourcesChanged;
         if (Instance != this) return;
 
         Shader.SetGlobalFloat("_ShowColoredGrid", 0f);
@@ -65,6 +126,10 @@ public class PlayerActionManager : MonoBehaviour
 
         if (!Input.GetMouseButtonDown(1)) return;
 
+        // Speed controls own this click without cancelling a placement or drag.
+        if (IsPointerOverControl<SimulationSpeedButton>() ||
+            IsPointerOverControl<GameClockUI>()) return;
+
         // Vehicle dragging gets first refusal so right-click cancels only the
         // drag preview and leaves the currently inspected building selected.
         if (ResourceTransportVehicleDragSource.TryCancelActiveDrag() ||
@@ -75,17 +140,16 @@ public class PlayerActionManager : MonoBehaviour
 
         // The factory priority control owns right-click so it can lower the
         // value without clearing the currently selected building.
-        if (IsPointerOverFactoryPriorityButton())
+        if (IsPointerOverControl<FactoryPriorityButton>())
         {
             return;
         }
 
         if (currentMode == PlayerMode.None)
         {
-            if (SelectedBuilding != null)
+            if (SelectedBuilding != null || SelectedResource != null)
             {
-                SelectedBuilding = null;
-                BuildingSelectionChanged?.Invoke(null);
+                SelectBuilding(null);
             }
 
             return;
@@ -129,32 +193,20 @@ public class PlayerActionManager : MonoBehaviour
             selectionCamera.ScreenPointToRay(Input.mousePosition);
 
         Building selectedBuilding = null;
-        float closestBuildingDistance = float.MaxValue;
-        RaycastHit[] hits = Physics.RaycastAll(
-                selectionRay,
-                buildingSelectionDistance,
-                buildingSelectionMask,
-                QueryTriggerInteraction.Ignore);
-
-        for (int i = 0; i < hits.Length; i++)
+        MapResourceSource selectedResource = null;
+        if (Physics.Raycast(selectionRay, out var hit, buildingSelectionDistance,
+                buildingSelectionMask, QueryTriggerInteraction.Ignore))
         {
-            Building candidate =
-                hits[i].collider.GetComponentInParent<Building>();
-            if (candidate != null &&
-                hits[i].distance < closestBuildingDistance)
-            {
-                selectedBuilding = candidate;
-                closestBuildingDistance = hits[i].distance;
-            }
+            WorldPlacementPicking.Resolve(WorldManager.Instance, hit, out selectedBuilding, out selectedResource);
         }
 
         // Publish every valid world click so a panel that was manually closed
         // can be reopened by clicking the same building again.
-        SelectedBuilding = selectedBuilding;
-        BuildingSelectionChanged?.Invoke(SelectedBuilding);
+        if (selectedResource != null) SelectResource(selectedResource);
+        else SelectBuilding(selectedBuilding);
     }
 
-    private static bool IsPointerOverFactoryPriorityButton()
+    private static bool IsPointerOverControl<T>() where T : Component
     {
         EventSystem eventSystem = EventSystem.current;
         if (eventSystem == null) return false;
@@ -170,7 +222,7 @@ public class PlayerActionManager : MonoBehaviour
         {
             GameObject hitObject = hits[i].gameObject;
             if (hitObject != null &&
-                hitObject.GetComponentInParent<FactoryPriorityButton>() !=
+                hitObject.GetComponentInParent<T>() !=
                 null)
             {
                 return true;
@@ -274,10 +326,9 @@ public class PlayerActionManager : MonoBehaviour
 
         if (changed)
         {
-            if (currentMode != PlayerMode.None && SelectedBuilding != null)
+            if (currentMode != PlayerMode.None && (SelectedBuilding != null || SelectedResource != null))
             {
-                SelectedBuilding = null;
-                BuildingSelectionChanged?.Invoke(null);
+                SelectBuilding(null);
             }
 
             ModeChanged?.Invoke(currentMode);
@@ -287,8 +338,7 @@ public class PlayerActionManager : MonoBehaviour
     public void CancelAllActions()
     {
         SetModeNone();
-        SelectedBuilding = null;
-        BuildingSelectionChanged?.Invoke(null);
+        SelectBuilding(null);
     }
 
     public RoadType SelectedRoadType 

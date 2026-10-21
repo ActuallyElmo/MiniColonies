@@ -74,6 +74,14 @@ public sealed class TooltipManager : MonoBehaviour
         GetOrCreate().ShowInternal(information, owner, owner != null);
     }
 
+    /// <summary>Explicit opt-in for tools belonging to a particular player view.</summary>
+    public static void ShowForView(string information, Object owner, PlayerViewMode view)
+    {
+        var views = PlayerViewModeManager.Instance;
+        if (owner == null || views == null || views.CurrentViewMode != view) return;
+        GetOrCreate().ShowInternal(information, owner, true);
+    }
+
     /// <summary>
     /// Hides the currently visible tooltip, regardless of who showed it.
     /// </summary>

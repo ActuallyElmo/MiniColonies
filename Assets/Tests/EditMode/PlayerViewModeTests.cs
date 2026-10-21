@@ -33,6 +33,101 @@ public sealed class PlayerViewModeTests
         Assert.AreEqual(PlayerMode.PlaceBuilding, actions.currentMode);
     }
 
+    [Test]
+    public void ExplicitSelectionPublishesRepeatedClicksAndRespectsToolViewAndTargetState()
+    {
+        var instance = new GameObject("Selected building");
+        instance.transform.SetParent(managers.transform);
+        var building = instance.AddComponent<Building>();
+        var selections = new List<Building>();
+        actions.BuildingSelectionChanged += selections.Add;
+        actions.SelectBuilding(building);
+        actions.SelectBuilding(building);
+        CollectionAssert.AreEqual(new[] { building, building }, selections,
+            "Repeated selection must preserve panel reopening notifications.");
+        views.SetOverviewView();
+        actions.SelectBuilding(building);
+        Assert.IsNull(actions.SelectedBuilding);
+        views.SetNormalView();
+        building.enabled = false;
+        actions.SelectBuilding(building);
+        Assert.IsNull(actions.SelectedBuilding);
+        building.enabled = true;
+        actions.SetModeBuildRoad();
+        actions.SelectBuilding(building);
+        Assert.IsNull(actions.SelectedBuilding);
+        actions.SetModeNone();
+        actions.SelectBuilding(building);
+        Assert.AreSame(building, actions.SelectedBuilding);
+        actions.SelectBuilding(null);
+        Assert.IsNull(actions.SelectedBuilding);
+    }
+
+    [TestCase(PlayerViewMode.Normal)]
+    [TestCase(PlayerViewMode.Overview)]
+    public void TrafficNodesCannotBeEnabledOutsideTrafficView(PlayerViewMode mode)
+    {
+        views.SetViewMode(mode);
+        int changes = 0;
+        views.TrafficNodeViewChanged += _ => changes++;
+        views.ToggleTrafficNodeView();
+        views.SetTrafficNodeView(true);
+        Assert.IsFalse(views.TrafficNodeViewEnabled);
+        Assert.AreEqual(0, changes);
+    }
+
+    [TestCase(PlayerViewMode.Normal)]
+    [TestCase(PlayerViewMode.Overview)]
+    public void TrafficNodesToggleAndResetBeforeLeavingTraffic(PlayerViewMode destination)
+    {
+        views.SetTrafficView();
+        var changes = new List<bool>();
+        views.TrafficNodeViewChanged += changes.Add;
+        views.ToggleTrafficNodeView();
+        Assert.IsTrue(views.TrafficNodeViewEnabled);
+        Assert.AreEqual(PlayerViewMode.Traffic, views.CurrentViewMode);
+        Assert.IsFalse(PlayerViewModeManager.AllowsGameplayActions);
+        views.SetTrafficNodeView(true);
+        views.SetTrafficView();
+        Assert.AreEqual(1, changes.Count, "Repeated selection must not rebuild the overlay.");
+        views.ToggleTrafficNodeView();
+        Assert.IsFalse(views.TrafficNodeViewEnabled);
+        views.ToggleTrafficNodeView();
+        views.ViewModeChanged += _ => Assert.IsFalse(views.TrafficNodeViewEnabled);
+        views.SetViewMode(destination);
+        CollectionAssert.AreEqual(new[] { true, false, true, false }, changes);
+        views.SetTrafficView();
+        Assert.IsFalse(views.TrafficNodeViewEnabled);
+    }
+
+    [Test]
+    public void TrafficNodeButtonIsOnlyVisibleInTrafficAndCanToggleOff()
+    {
+        var ui = managers.AddComponent<PlayerViewModeUI>();
+        var buttonObject = new GameObject("Traffic", typeof(RectTransform), typeof(Image), typeof(Button));
+        buttonObject.transform.SetParent(managers.transform);
+        SetField(ui, "viewModeManager", views);
+        SetField(ui, "trafficButton", buttonObject.GetComponent<Button>());
+        InvokeLifecycle(ui, "OnEnable");
+        var button = (Button)GetField(ui, "trafficNodeButton");
+        Assert.IsNotNull(button);
+        Assert.IsFalse(button.gameObject.activeSelf);
+        views.SetTrafficView();
+        Assert.IsTrue(button.gameObject.activeSelf);
+        button.onClick.Invoke();
+        Assert.IsTrue(views.TrafficNodeViewEnabled);
+        Assert.IsTrue(button.interactable);
+        // Re-enabling must not register a second listener or create a second button.
+        InvokeLifecycle(ui, "OnEnable");
+        Assert.AreSame(button, GetField(ui, "trafficNodeButton"));
+        button.onClick.Invoke();
+        Assert.IsFalse(views.TrafficNodeViewEnabled);
+        views.SetOverviewView();
+        Assert.IsFalse(button.gameObject.activeSelf);
+        views.SetNormalView();
+        Assert.IsFalse(button.gameObject.activeSelf);
+    }
+
     [TestCase(PlayerViewMode.Overview)]
     [TestCase(PlayerViewMode.Traffic)]
     public void RestrictedViewsCancelToolsAndBlockEveryToolEntryPoint(PlayerViewMode mode)
@@ -327,6 +422,39 @@ public sealed class PlayerViewModeTests
             Mathf.Lerp(controller.minSpeed, controller.maxSpeed, 6f / 14f),
             trafficSpeed,
             0.0001f);
+    }
+
+    [Test]
+    public void TrafficBuilderUsesSharedTooltipAndClearsItOnViewExit()
+    {
+        managers.AddComponent<TooltipManager>();
+        var builder = managers.AddComponent<IntersectionBuilderTool>();
+        builder.Initialize(views, null, null, null);
+        views.SetTrafficView();
+        typeof(IntersectionBuilderTool).GetMethod("SetHint", BindingFlags.Instance | BindingFlags.NonPublic)
+            .Invoke(builder, new object[] { "Select an entry" });
+        Assert.AreEqual("Select an entry", TooltipManager.CurrentText);
+        TooltipManager.Show("Gameplay tooltip", actions);
+        Assert.AreEqual("Select an entry", TooltipManager.CurrentText,
+            "Normal gameplay tooltips must remain suppressed in Traffic mode.");
+        views.SetNormalView();
+        Assert.IsFalse(TooltipManager.IsVisible);
+        TooltipManager.ShowForView("Traffic only", builder, PlayerViewMode.Traffic);
+        Assert.IsFalse(TooltipManager.IsVisible);
+    }
+
+    [Test]
+    public void DisablingBuilderDoesNotHideAnotherTooltipOwner()
+    {
+        managers.AddComponent<TooltipManager>();
+        var builder = managers.AddComponent<IntersectionBuilderTool>();
+        builder.Initialize(views, null, null, null);
+        views.SetTrafficView();
+        TooltipManager.ShowForView("Builder hint", builder, PlayerViewMode.Traffic);
+        TooltipManager.ShowForView("Another tool", actions, PlayerViewMode.Traffic);
+        InvokeLifecycle(builder, "OnDisable");
+        Assert.AreEqual("Another tool", TooltipManager.CurrentText);
+        TooltipManager.Hide(actions);
     }
 
     private static void InvokeLifecycle(object target, string name) =>

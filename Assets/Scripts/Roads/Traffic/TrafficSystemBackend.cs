@@ -42,6 +42,8 @@ public class TrafficSystemBackend : MonoBehaviour
     private Color _nodeColor = new Color(1f, 1f, 1f, 0.5f);
 
     public event Action OnTrafficNetworkReady;
+    // Payload is the active 0-9 signal index. Direction masks cannot distinguish lanes.
+    public event Action<Vector2Int, int> OnTrafficLightStateChanged;
 
     private void Awake()
     {
@@ -313,8 +315,41 @@ public class TrafficSystemBackend : MonoBehaviour
     {
         foreach (IIntersectionController controller in _intersectionControllers.Values)
         {
+            int previousIndex = controller is TrafficLightIntersectionController previousLight
+                ? previousLight.ActiveSignalIndex
+                : -1;
             controller.Tick(deltaTime);
+            if (controller is TrafficLightIntersectionController light &&
+                light.ActiveSignalIndex != previousIndex)
+            {
+                OnTrafficLightStateChanged?.Invoke(controller.Cell, light.ActiveSignalIndex);
+            }
         }
+    }
+
+    public bool TryGetTrafficLightState(
+        Vector2Int cell,
+        int incomingDirectionBit,
+        out bool green)
+    {
+        green = false;
+        if (!_intersectionControllers.TryGetValue(cell, out IIntersectionController controller) ||
+            !(controller is TrafficLightIntersectionController light)) return false;
+        green = light.IsGreenForDirection(incomingDirectionBit);
+        return true;
+    }
+
+    public bool TryGetTrafficLightState(Vector2Int cell, LaneId incomingLane, out bool green)
+    {
+        green = false;
+        if (CurrentTrafficGraphSnapshot == null ||
+            !CurrentTrafficGraphSnapshot.TryGetLane(incomingLane, out var lane) ||
+            lane.EndAnchorCell != cell ||
+            !_intersectionControllers.TryGetValue(cell, out var controller) ||
+            !(controller is TrafficLightIntersectionController light) ||
+            !light.TryGetSignalIndex(lane.EndLegDirectionBit, lane.LaneOrdinal, out _)) return false;
+        green = light.IsGreenForLane(lane.EndLegDirectionBit, lane.LaneOrdinal);
+        return true;
     }
 
     public bool TryGetCurrentManagedEdge(
@@ -456,9 +491,16 @@ public class TrafficSystemBackend : MonoBehaviour
 
     private void RebuildIntersectionControllers()
     {
-        _intersectionControllers.Clear();
+        Dictionary<Vector2Int, IIntersectionController> previousControllers =
+            _intersectionControllers;
+        var rebuiltControllers =
+            new Dictionary<Vector2Int, IIntersectionController>();
 
         var movementEdgesByCell = new Dictionary<Vector2Int, List<TrafficEdge>>();
+        var publishedNodesByCell = new Dictionary<Vector2Int, ControlledNodeRecord>();
+        if (CurrentTrafficGraphSnapshot != null)
+            foreach (var node in CurrentTrafficGraphSnapshot.ControlledNodes)
+                publishedNodesByCell[node.GridPosition] = node;
         foreach (TrafficEdge edge in allEdges)
         {
             edge.exitController = null;
@@ -479,6 +521,13 @@ public class TrafficSystemBackend : MonoBehaviour
             movementEdges.Add(edge);
         }
 
+        // A cleared entry still has a light, even if the node has no movements.
+        if (CurrentTrafficGraphSnapshot != null)
+            foreach (var node in CurrentTrafficGraphSnapshot.ControlledNodes)
+                if (IntersectionControlUtility.UsesTrafficLights(node.RuleType) &&
+                    !movementEdgesByCell.ContainsKey(node.GridPosition))
+                    movementEdgesByCell.Add(node.GridPosition, new List<TrafficEdge>());
+
         foreach (KeyValuePair<Vector2Int, List<TrafficEdge>> kvp in movementEdgesByCell)
         {
             IntersectionData data = null;
@@ -488,27 +537,70 @@ public class TrafficSystemBackend : MonoBehaviour
             }
 
             IIntersectionController controller =
-                CreateIntersectionController(kvp.Key, data, kvp.Value);
-            _intersectionControllers[kvp.Key] = controller;
+                CreateIntersectionController(kvp.Key, data, kvp.Value,
+                    publishedNodesByCell.TryGetValue(kvp.Key, out var publishedNode) ? publishedNode : null);
+            if (controller is TrafficLightIntersectionController light &&
+                previousControllers.TryGetValue(
+                    kvp.Key, out IIntersectionController previous) &&
+                previous is TrafficLightIntersectionController previousLight)
+            {
+                light.RestorePhaseFrom(previousLight);
+            }
+            rebuiltControllers[kvp.Key] = controller;
 
             foreach (TrafficEdge edge in kvp.Value)
             {
                 edge.exitController = controller;
             }
         }
+
+        _intersectionControllers = rebuiltControllers;
     }
 
     private IIntersectionController CreateIntersectionController(
         Vector2Int cell,
         IntersectionData data,
-        List<TrafficEdge> movementEdges)
+        List<TrafficEdge> movementEdges,
+        ControlledNodeRecord publishedNode)
     {
-        IntersectionRuleType ruleType = data != null
-            ? data.RuleType
-            : IntersectionRuleType.FreeForAll;
-        IIntersectionController controller = ruleType == IntersectionRuleType.FIFO
-            ? new FIFOIntersectionController()
-            : new FreeForAllIntersectionController();
+        if (publishedNode != null && IntersectionControlUtility.UsesTrafficLights(publishedNode.RuleType))
+        {
+            // Signals use captured policy until the next validated publication.
+            var publishedData = new IntersectionData(cell);
+            publishedData.RuleType = publishedNode.RuleType;
+            publishedData.SmartTrafficLightWaitSeconds = publishedNode.SmartTrafficLightWaitSeconds;
+            publishedData.TrafficLightCycleSeconds = publishedNode.TrafficLightCycleSeconds;
+            for (int i = 0; i < publishedNode.TrafficLightIndices.Count; i++)
+            {
+                var signal = publishedNode.TrafficLightIndices[i];
+                publishedData.SetTrafficLightIndex(signal.Source.DirectionBit,
+                    signal.Source.LaneIndex, signal.Index);
+            }
+            var sources = IntersectionConnectionEditing.CollectIncomingSources(
+                CurrentTrafficGraphSnapshot, publishedNode);
+            var light = new TrafficLightIntersectionController();
+            light.Initialize(cell, publishedData, movementEdges, sources);
+            return light;
+        }
+        IntersectionRuleType ruleType = publishedNode != null ? publishedNode.RuleType :
+            data != null ? data.RuleType : IntersectionRuleType.FreeForAll;
+        IIntersectionController controller;
+        switch (ruleType)
+        {
+            case IntersectionRuleType.FIFO:
+                controller = new FIFOIntersectionController();
+                break;
+            case IntersectionRuleType.PriorityRoad:
+                controller = new PriorityRoadIntersectionController();
+                break;
+            case IntersectionRuleType.TrafficLight:
+            case IntersectionRuleType.SmartTrafficLight:
+                controller = new TrafficLightIntersectionController();
+                break;
+            default:
+                controller = new FreeForAllIntersectionController();
+                break;
+        }
         controller.Initialize(cell, data, movementEdges);
         return controller;
     }

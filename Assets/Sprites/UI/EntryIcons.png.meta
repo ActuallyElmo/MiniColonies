@@ -175,6 +175,28 @@ TextureImporter:
       indices: 
       edges: []
       weights: []
+    - serializedVersion: 2
+      name: EntryIcons_3
+      rect:
+        serializedVersion: 2
+        x: 0
+        y: 16
+        width: 16
+        height: 16
+      alignment: 0
+      pivot: {x: 0, y: 0}
+      border: {x: 0, y: 0, z: 0, w: 0}
+      customData: 
+      outline: []
+      physicsShape: []
+      tessellationDetail: 0
+      bones: []
+      spriteID: dec0adf007498dd48b05098810685abc
+      internalID: 818180728
+      vertices: []
+      indices: 
+      edges: []
+      weights: []
     outline: []
     customData: 
     physicsShape: []
@@ -192,6 +214,7 @@ TextureImporter:
       EntryIcons_0: -234602869
       EntryIcons_1: -326269527
       EntryIcons_2: 919358407
+      EntryIcons_3: 818180728
   mipmapLimitGroupName: 
   pSDRemoveMatte: 0
   userData: 

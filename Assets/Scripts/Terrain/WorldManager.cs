@@ -14,8 +14,13 @@ public class TerrainLayer
     [Tooltip("If a generated patch of this layer has fewer vertices than this, it will be overwritten by a neighboring layer.")]
     public int minRegionSize = 0; 
 
-    [Tooltip("If false, buildings/roads cannot be placed here, and the layer shows as red in build mode.")]
+    // Retain the serialized boolean for old scenes and callers. Explicit tile
+    // types take precedence; the Inspector presents only the named surface type.
+    [HideInInspector]
     public bool isBuildable = true;
+    public TerrainSurfaceType surfaceType;
+    public TerrainSurfaceType SurfaceType => surfaceType == TerrainSurfaceType.Legacy
+        ? (isBuildable ? TerrainSurfaceType.FlatGround : TerrainSurfaceType.WaterLevel) : surfaceType;
 }
 
 public class WorldManager : MonoBehaviour
@@ -68,6 +73,17 @@ public class WorldManager : MonoBehaviour
     public Material terrainMaterial;
     public List<TerrainLayer> layers = new List<TerrainLayer>();
 
+    [Header("Map Resources (processed in list order; occupied tiles do not overlap)")]
+    public List<MapResourceSpawnSettings> mapResources = new List<MapResourceSpawnSettings>();
+    [HideInInspector] public bool mapResourceSetupComplete;
+    public MapResourceMap ResourceMap { get; private set; } = new MapResourceMap();
+    // A blended single-tile resource needs an interior vertex. Keep the same subdivision grid across chunk seams.
+    public int TerrainMeshSubdivisions => Mathf.Clamp(meshSubdivisions, ResourceMap.Sources.Count > 0 ? 2 : 1, 16);
+    public event System.Action ResourcesChanged;
+    public bool IsGenerating { get; private set; }
+    public int PlacementRevision { get; private set; }
+    private Coroutine _generationRoutine;
+
     private Texture2D _gridDataTexture;
     private int[,] _elevationData;
     private Dictionary<Vector2Int, ChunkRenderer> _chunks = new Dictionary<Vector2Int, ChunkRenderer>();
@@ -101,6 +117,11 @@ public class WorldManager : MonoBehaviour
         Instance = null;
     }
 
+    private void OnValidate()
+    {
+        unchecked { PlacementRevision++; }
+    }
+
     private void Start()
     {
         if (randomizeSeedOnPlay)
@@ -115,7 +136,10 @@ public class WorldManager : MonoBehaviour
     {
         if (layers.Count == 0) return;
 
-        if (Application.isPlaying) StartCoroutine(GenerateWorldAsync());
+        if (_generationRoutine != null) StopCoroutine(_generationRoutine);
+        _generationRoutine = null;
+
+        if (Application.isPlaying) _generationRoutine = StartCoroutine(GenerateWorldAsync());
         else GenerateWorldSync(); 
     }
 
@@ -132,9 +156,16 @@ public class WorldManager : MonoBehaviour
 
         CalculateVisualHeights(); 
         yield return null; 
+
+        yield return RunResourceWork(GenerateResources());
+        yield return null;
         
-        yield return StartCoroutine(BuildChunksAsyncTimeBoxed());
+        yield return BuildChunksAsyncTimeBoxed();
+        yield return null;
+        yield return RunResourceWork(MapResourceVisuals.Spawn(this));
         GenerateGridDataTexture();
+        IsGenerating = false;
+        _generationRoutine = null;
     }
 
     private void GenerateWorldSync()
@@ -143,13 +174,19 @@ public class WorldManager : MonoBehaviour
         GenerateWorldData();
         CleanUpRegions();
         CalculateVisualHeights();
+        IEnumerator resources = GenerateResources();
+        while (resources.MoveNext()) { }
         BuildChunksSync();
+        IEnumerator visuals = MapResourceVisuals.Spawn(this);
+        while (visuals.MoveNext()) { }
         GenerateGridDataTexture();
+        IsGenerating = false;
     }
 
     private void PrepareGeneration()
     {
-        ClearWorld();
+        ClearGeneratedWorld();
+        IsGenerating = true;
         Shader.SetGlobalFloat("_MaxLayers", layers.Count); 
         Shader.SetGlobalFloat("_HeightStep", heightStep);
     }
@@ -157,15 +194,67 @@ public class WorldManager : MonoBehaviour
     [ContextMenu("Clear World")]
     public void ClearWorld()
     {
+        if (_generationRoutine != null) StopCoroutine(_generationRoutine);
+        _generationRoutine = null;
+        IsGenerating = false;
+        ClearGeneratedWorld();
+    }
+
+    private void OnDisable()
+    {
+        if (IsGenerating) ClearWorld();
+    }
+
+    private void ClearGeneratedWorld()
+    {
+        unchecked { PlacementRevision++; }
         for (int i = transform.childCount - 1; i >= 0; i--)
         {
             GameObject child = transform.GetChild(i).gameObject;
+            child.SetActive(false);
             if (Application.isPlaying) Destroy(child);
             else DestroyImmediate(child);
         }
         _chunks.Clear();
         _elevationData = null;
+        visualHeights = null;
+        ResourceMap = new MapResourceMap();
+        ResourcesChanged?.Invoke();
     }
+
+    private IEnumerator GenerateResources()
+    {
+        var generated = new MapResourceMap();
+        IEnumerator work = MapResourceGenerator.Generate(worldSize, makeCircular, seed,
+            mapResources, SampleResourceTerrain, generated);
+        while (work.MoveNext()) yield return null;
+        ResourceMap = generated;
+        ResourcesChanged?.Invoke();
+        foreach (string warning in generated.Warnings) UnityEngine.Debug.LogWarning(warning, this);
+    }
+
+    private ResourceTerrainCell SampleResourceTerrain(Vector2Int cell)
+    {
+        bool occupied = (BuildingSystemBackend.Instance != null && BuildingSystemBackend.Instance.IsCellOccupied(cell)) ||
+                        (RoadSystemBackend.Instance != null && RoadSystemBackend.Instance.Roads.ContainsKey(cell));
+        return new ResourceTerrainCell(!IsExtrusionCell(cell.x, cell.y),
+            GetPhysicalHeight(cell.x + 0.5f, cell.y + 0.5f) * heightStep, IsTransition(cell.x, cell.y), occupied,
+            IsLayerBuildable(GetCellLayer(cell.x, cell.y)));
+    }
+
+    // Infrastructure runs on real frame budgets, including while simulation is paused.
+    private IEnumerator RunResourceWork(IEnumerator work)
+    {
+        var timer = Stopwatch.StartNew();
+        while (work.MoveNext())
+        {
+            if (timer.Elapsed.TotalMilliseconds < Mathf.Max(0.1f, maxMillisecondsPerFrame)) continue;
+            yield return null;
+            timer.Restart();
+        }
+    }
+
+    public bool IsResourceBlockingCell(int x, int z) => ResourceMap.BlocksConstruction(new Vector2Int(x, z));
 
     // --- INTERNAL DATA GENERATION (HIDDEN ARRAY SIZE) ---
     // The internal arrays are sized up to handle the extrusion math,
@@ -381,7 +470,7 @@ public class WorldManager : MonoBehaviour
                 Color cellColor;
                 int layer = GetCellLayer(x, z);
                 
-                if (IsTransition(x, z) || !IsLayerBuildable(layer) || IsExtrusionCell(x, z))
+                if (IsTransition(x, z) || !IsLayerBuildable(layer) || IsExtrusionCell(x, z) || IsResourceBlockingCell(x, z))
 {
                     float divisor = Mathf.Max(1f, layers.Count - 1f);
                     float lerpValue = (float)layer / divisor; 
@@ -458,12 +547,25 @@ public class WorldManager : MonoBehaviour
 
     public bool IsLayerBuildable(int layerIndex)
     {
-        if (layerIndex < 0 || layerIndex >= layers.Count) return false;
-        return layers[layerIndex].isBuildable;
+        return GetLayerSurfaceType(layerIndex) == TerrainSurfaceType.FlatGround;
+    }
+
+    public TerrainSurfaceType GetLayerSurfaceType(int layerIndex) =>
+        layers != null && layerIndex >= 0 && layerIndex < layers.Count && layers[layerIndex] != null
+            ? layers[layerIndex].SurfaceType : TerrainSurfaceType.Legacy;
+
+    public WorldTileInfo GetTileInfo(Vector2Int cell)
+    {
+        if (IsExtrusionCell(cell.x, cell.y))
+            return new WorldTileInfo(false, 0, TerrainSurfaceType.Legacy, false, null);
+        int layer = GetCellLayer(cell.x, cell.y);
+        ResourceMap.TryGetSource(cell, out MapResourceSource source);
+        return new WorldTileInfo(true, layer, GetLayerSurfaceType(layer), IsTransition(cell.x, cell.y), source);
     }
 
     public bool IsBuildableCell(int cellX, int cellZ)
     {
+        if (IsResourceBlockingCell(cellX, cellZ)) return false;
         // Immediately block interaction with the visual borders
         if (IsExtrusionCell(cellX, cellZ)) return false;
 
@@ -587,6 +689,7 @@ public class WorldManager : MonoBehaviour
     {
         if (x < 0 || x > worldSize || z < 0 || z > worldSize) return;
         _elevationData[x + extrusion, z + extrusion] = Mathf.Clamp(newLayerIndex, 0, layers.Count - 1);
+        unchecked { PlacementRevision++; }
         UpdateChunksAroundPoint(x, z);
     }
 

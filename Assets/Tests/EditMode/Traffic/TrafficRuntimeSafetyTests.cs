@@ -269,6 +269,246 @@ public sealed class TrafficRuntimeSafetyTests
         Assert.IsEmpty(results);
     }
 
+    [TestCase(IntersectionRuleType.FreeForAll)]
+    [TestCase(IntersectionRuleType.FIFO)]
+    [TestCase(IntersectionRuleType.TrafficLight)]
+    [TestCase(IntersectionRuleType.PriorityRoad)]
+    public void MovingVehicleDoesNotReapplyReactionDelayAtIntersectionEntry(
+        IntersectionRuleType rule)
+    {
+        using (var scenario = new IntersectionRestartScenario(rule))
+        {
+            scenario.EnterFollower(0.95f, 0.6f);
+            scenario.EnterLeader(scenario.Exit, 8f, 0.6f);
+            scenario.SetPendingReaction();
+
+            scenario.Tick(0.1f);
+
+            Assert.AreSame(scenario.Movement, scenario.Follower.currentEdge);
+            Assert.Greater(scenario.Follower.conveyorDistanceOnEdge, 0f);
+            Assert.GreaterOrEqual(scenario.Follower.conveyorCurrentSpeed, 0.6f);
+            Assert.IsFalse(scenario.Follower.trafficWasBlocked);
+            Assert.AreEqual(0f, scenario.Follower.trafficReleaseTime);
+        }
+    }
+
+    [TestCase(IntersectionRuleType.FreeForAll)]
+    [TestCase(IntersectionRuleType.FIFO)]
+    [TestCase(IntersectionRuleType.TrafficLight)]
+    [TestCase(IntersectionRuleType.PriorityRoad)]
+    public void MovingVehicleDoesNotReapplyReactionDelayInsideIntersection(
+        IntersectionRuleType rule)
+    {
+        using (var scenario = new IntersectionRestartScenario(rule))
+        {
+            scenario.EnterFollower(0.02f, 0.6f, true);
+            scenario.SetPendingReaction();
+
+            scenario.Tick(0.1f);
+
+            Assert.AreSame(scenario.Movement, scenario.Follower.currentEdge);
+            Assert.Greater(scenario.Follower.conveyorDistanceOnEdge, 0.02f);
+            Assert.GreaterOrEqual(scenario.Follower.conveyorCurrentSpeed, 0.6f);
+            Assert.IsFalse(scenario.Follower.trafficWasBlocked);
+        }
+    }
+
+    [TestCase(IntersectionRuleType.FreeForAll, 0.85f)]
+    [TestCase(IntersectionRuleType.FIFO, 0.85f)]
+    [TestCase(IntersectionRuleType.TrafficLight, 0.85f)]
+    [TestCase(IntersectionRuleType.PriorityRoad, 0.85f)]
+    [TestCase(IntersectionRuleType.FreeForAll, 1f)]
+    [TestCase(IntersectionRuleType.FIFO, 1f)]
+    [TestCase(IntersectionRuleType.TrafficLight, 1f)]
+    [TestCase(IntersectionRuleType.PriorityRoad, 1f)]
+    public void StoppedVehicleWaitsBeforeRestartingEvenWithDistantLeader(
+        IntersectionRuleType rule,
+        float startDistance)
+    {
+        using (var scenario = new IntersectionRestartScenario(rule))
+        {
+            scenario.EnterFollower(startDistance, 0f);
+            scenario.EnterLeader(scenario.Exit, 8f, 0.6f);
+            scenario.SetPendingReaction();
+
+            scenario.Tick(0.1f);
+
+            Assert.AreSame(scenario.Approach, scenario.Follower.currentEdge);
+            Assert.AreEqual(startDistance, scenario.Follower.conveyorDistanceOnEdge);
+            Assert.AreEqual(0f, scenario.Follower.conveyorCurrentSpeed);
+            Assert.IsTrue(scenario.Follower.trafficWasBlocked);
+            Assert.AreEqual(float.MaxValue, scenario.Follower.trafficReleaseTime);
+        }
+    }
+
+    [TestCase(IntersectionRuleType.FreeForAll)]
+    [TestCase(IntersectionRuleType.FIFO)]
+    [TestCase(IntersectionRuleType.TrafficLight)]
+    [TestCase(IntersectionRuleType.PriorityRoad)]
+    public void MovingVehicleStillStopsForOccupiedIntersectionEntry(
+        IntersectionRuleType rule)
+    {
+        using (var scenario = new IntersectionRestartScenario(rule))
+        {
+            scenario.EnterFollower(0.8f, 0.6f);
+            scenario.EnterLeader(scenario.Movement, 0.1f, 0f);
+            scenario.SetPendingReaction();
+
+            scenario.Tick(0.1f);
+
+            Assert.AreSame(scenario.Approach, scenario.Follower.currentEdge);
+            Assert.AreEqual(0.8f, scenario.Follower.conveyorDistanceOnEdge);
+            Assert.AreEqual(0f, scenario.Follower.conveyorCurrentSpeed);
+            Assert.IsTrue(scenario.Follower.trafficWasBlocked);
+        }
+    }
+
+    [Test]
+    public void MovingVehicleStillStopsAtRedLight()
+    {
+        using (var scenario = new IntersectionRestartScenario(IntersectionRuleType.TrafficLight))
+        {
+            scenario.EnterFollower(0.8f, 0.6f);
+            scenario.SetPendingReaction();
+            scenario.TurnLightRed();
+
+            scenario.Tick(0.1f);
+
+            Assert.AreSame(scenario.Approach, scenario.Follower.currentEdge);
+            Assert.LessOrEqual(scenario.Follower.conveyorDistanceOnEdge, 0.8501f);
+            Assert.Less(scenario.Follower.conveyorCurrentSpeed, 0.6f);
+        }
+    }
+
+    private sealed class IntersectionRestartScenario : System.IDisposable
+    {
+        private readonly GameObject conveyorObject = new GameObject("Restart test conveyor");
+        private readonly GameObject followerObject = new GameObject("Restart test follower");
+        private readonly GameObject leaderObject = new GameObject("Restart test leader");
+        private readonly PopTransportVehicleData data =
+            ScriptableObject.CreateInstance<PopTransportVehicleData>();
+        private readonly ConveyorTrafficManager conveyor;
+        private readonly VehicleAI leader;
+        private readonly IIntersectionController controller;
+
+        public readonly VehicleAI Follower;
+        public readonly TrafficEdge Approach = CreateRoadLane(1, Vector3.zero, Vector3.forward);
+        public readonly TrafficEdge Movement = CreateRoadLane(2, Vector3.forward, Vector3.forward * 2f);
+        public readonly TrafficEdge Exit = CreateRoadLane(3, Vector3.forward * 2f, Vector3.forward * 12f);
+
+        public IntersectionRestartScenario(IntersectionRuleType rule)
+        {
+            try
+            {
+                conveyor = conveyorObject.AddComponent<ConveyorTrafficManager>();
+                Follower = followerObject.AddComponent<VehicleAI>();
+                leader = leaderObject.AddComponent<VehicleAI>();
+                data.vehicleLengthUnits = 0.24f;
+                data.minimumFollowingGapUnits = 0.1f;
+                data.maximumVehicleSpeed = 1f;
+                data.accelerationUnitsPerSecondSquared = 0.7f;
+                data.decelerationUnitsPerSecondSquared = 0.5f;
+                data.emergencyDecelerationUnitsPerSecondSquared = 0.5f;
+                data.maximumJerkUnitsPerSecondCubed = 10f;
+                Follower.vehicleData = data;
+                leader.vehicleData = data;
+                Movement.kind = TrafficEdgeKind.IntersectionMovement;
+                Movement.fromDirectionBit = 1;
+                Movement.fromLaneIndex = 0;
+                switch (rule)
+                {
+                    case IntersectionRuleType.FIFO:
+                        controller = new FIFOIntersectionController();
+                        break;
+                    case IntersectionRuleType.TrafficLight:
+                        controller = new TrafficLightIntersectionController();
+                        break;
+                    case IntersectionRuleType.PriorityRoad:
+                        controller = new PriorityRoadIntersectionController();
+                        break;
+                    default:
+                        controller = new FreeForAllIntersectionController();
+                        break;
+                }
+                var intersection = new IntersectionData(Vector2Int.zero) { RuleType = rule };
+                intersection.SetPriorityDirections(1, 16);
+                var crossMovement = CreateRoadLane(4, Vector3.left, Vector3.right);
+                crossMovement.kind = TrafficEdgeKind.IntersectionMovement;
+                crossMovement.fromDirectionBit = 4;
+                crossMovement.fromLaneIndex = 0;
+                controller.Initialize(Vector2Int.zero, intersection, new[] { Movement, crossMovement });
+                Movement.exitController = controller;
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
+
+        public void EnterFollower(float distance, float speed, bool insideIntersection = false)
+        {
+            var edges = insideIntersection
+                ? new List<TrafficEdge> { Movement, Exit }
+                : new List<TrafficEdge> { Approach, Movement, Exit };
+            Enter(Follower, edges, distance, speed);
+        }
+
+        public void EnterLeader(TrafficEdge edge, float distance, float speed)
+        {
+            var edges = edge == Movement
+                ? new List<TrafficEdge> { Movement, Exit }
+                : new List<TrafficEdge> { Exit };
+            Enter(leader, edges, distance, speed);
+        }
+
+        private void Enter(VehicleAI vehicle, List<TrafficEdge> edges, float distance, float speed)
+        {
+            Assert.IsTrue(conveyor.EnterRoute(vehicle, new TrafficRoute
+            {
+                ManagedEdges = edges,
+                StartDistanceOnFirstEdge = distance,
+                EndDistanceOnFinalEdge = Exit.totalLength
+            }));
+            vehicle.conveyorCurrentSpeed = speed;
+            if (vehicle.currentEdge == Movement) controller.NotifyEntered(vehicle, Movement);
+        }
+
+        public void SetPendingReaction()
+        {
+            Follower.trafficWasBlocked = true;
+            // Explicitly keep the reaction pending; no wall-clock waits or randomness.
+            Follower.trafficReleaseTime = float.MaxValue;
+        }
+
+        public void TurnLightRed()
+        {
+            var signal = (TrafficLightIntersectionController)controller;
+            signal.Tick(signal.LightDurationSeconds);
+            Assert.IsFalse(signal.IsGreenForLane(1, 0));
+        }
+
+        public void Tick(float deltaSeconds)
+        {
+            typeof(ConveyorTrafficManager).GetMethod(
+                "TickVehicle", BindingFlags.Instance | BindingFlags.NonPublic)
+                .Invoke(conveyor, new object[] { Follower, deltaSeconds });
+        }
+
+        public void Dispose()
+        {
+            if (conveyor != null)
+            {
+                conveyor.LeaveTraffic(Follower);
+                conveyor.LeaveTraffic(leader);
+            }
+            Object.DestroyImmediate(followerObject);
+            Object.DestroyImmediate(leaderObject);
+            Object.DestroyImmediate(conveyorObject);
+            Object.DestroyImmediate(data);
+        }
+    }
+
     private static TrafficEdge CreateRoadLane(
         int edgeId,
         Vector3 start,

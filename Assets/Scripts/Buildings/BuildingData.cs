@@ -82,6 +82,30 @@ public class BuildingTile
     
     [Tooltip("If it is a port, what kind of traffic is allowed?")]
     public PortType portType;
+
+    [HideInInspector]
+    public List<BuildingGroundType> allowedGrounds = new List<BuildingGroundType>();
+
+    [Tooltip("Additional tile permissions. Resource nodes/deposits are listed automatically from map definitions. Empty uses normal flat-ground placement.")]
+    public List<WorldTileType> allowedTileTypes = new List<WorldTileType>();
+
+    [Tooltip("At least one of these types must match. Matching required types also grant permission. Optional terrain permissions cannot satisfy a required resource.")]
+    public List<WorldTileType> requiredTileTypes = new List<WorldTileType>();
+
+    [Tooltip("Replaces all terrain/resource rule icons in this footprint cell with one centered icon. Does not change placement rules or port indicators. Empty uses the shared tile icons.")]
+    public Sprite footprintIconOverride;
+
+    [HideInInspector]
+    public bool requireGroundMatch;
+
+    public int OptionalTileTypeCount => allowedTileTypes != null ? allowedTileTypes.Count : 0;
+    public int RequiredTileTypeCount => requiredTileTypes != null ? requiredTileTypes.Count : 0;
+    public int TileTypeCount => OptionalTileTypeCount + RequiredTileTypeCount;
+    public bool HasTileRules => TileTypeCount > 0;
+    public bool RequiresTileMatch => HasTileRules ? RequiredTileTypeCount > 0 : requireGroundMatch;
+
+    public WorldTileType GetTileType(int index) => index < OptionalTileTypeCount
+        ? allowedTileTypes[index] : requiredTileTypes[index - OptionalTileTypeCount];
 }
 
 [CreateAssetMenu(fileName = "NewBuilding", menuName = "ColonySim/Building")]
@@ -90,16 +114,21 @@ public class BuildingData : ScriptableObject
     public string buildingName = "New Building";
     public GameObject prefab;
     public List<BuildingTile> footprint = new List<BuildingTile>();
+    [Tooltip("Named coverage areas measured from the footprint. Each range can optionally require a nearby tile type for placement.")]
+    public List<BuildingRange> ranges = new List<BuildingRange>();
 
     public List<BuildingTile> GetRotatedFootprint(int rotationSteps)
     {
         List<BuildingTile> rotated = new List<BuildingTile>();
+        if (footprint == null) return rotated;
+        int steps = ((rotationSteps % 4) + 4) % 4;
         foreach (var tile in footprint)
         {
+            if (tile == null) { rotated.Add(null); continue; }
             Vector2Int newPos = tile.localPosition;
             
             // Apply 90-degree clockwise rotation math (x' = y, y' = -x)
-            for (int i = 0; i < rotationSteps % 4; i++)
+            for (int i = 0; i < steps; i++)
             {
                 newPos = new Vector2Int(newPos.y, -newPos.x);
             }
@@ -107,7 +136,15 @@ public class BuildingData : ScriptableObject
             rotated.Add(new BuildingTile { 
                 localPosition = newPos, 
                 isPort = tile.isPort, 
-                portType = tile.portType 
+                portType = tile.portType,
+                requireGroundMatch = tile.requireGroundMatch,
+                footprintIconOverride = tile.footprintIconOverride,
+                allowedTileTypes = tile.allowedTileTypes != null
+                    ? new List<WorldTileType>(tile.allowedTileTypes) : new List<WorldTileType>(),
+                requiredTileTypes = tile.requiredTileTypes != null
+                    ? new List<WorldTileType>(tile.requiredTileTypes) : new List<WorldTileType>(),
+                allowedGrounds = tile.allowedGrounds != null
+                    ? new List<BuildingGroundType>(tile.allowedGrounds) : new List<BuildingGroundType>()
             });
         }
         return rotated;

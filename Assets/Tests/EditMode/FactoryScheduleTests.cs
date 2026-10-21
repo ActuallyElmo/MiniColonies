@@ -91,8 +91,11 @@ public sealed class FactoryScheduleTests
             _building.GetFactoryStoredAmount(ResourceType.Steel));
     }
 
-    [Test]
-    public void CompletedShiftOverfillsOutputAndBlocksTheNextShift()
+    [TestCase(0.5f)]
+    [TestCase(1f)]
+    [TestCase(2f)]
+    [TestCase(4f)]
+    public void CompletedShiftOverfillsOutputAndBlocksTheNextShift(float speed)
     {
         _buildingData.popRequiredForMaxEfficiency = 0;
         _buildingData.resources = new List<ProductionResourceEntry>
@@ -113,6 +116,10 @@ public sealed class FactoryScheduleTests
 
         _timeObject = new GameObject("FactoryRuntimeTestClock");
         GameTimeManager time = _timeObject.AddComponent<GameTimeManager>();
+        time.SimulationSpeed = speed;
+        typeof(GameTimeManager).GetMethod("Awake",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+            .Invoke(time, null);
         _building.Initialize(
             _buildingData,
             Vector2Int.zero,
@@ -120,12 +127,15 @@ public sealed class FactoryScheduleTests
             new List<BuildingTile>());
 
         Assert.AreSame(first, _building.CurrentFactoryShift);
-        for (int hour = 0;
-             hour < _building.FactoryShiftDurationHours;
-             hour++)
-        {
-            time.AdvanceTime(time.RealSecondsPerGameHour);
-        }
+        float realSecondsPerHour = time.RealSecondsPerGameHour / speed;
+        time.AdvanceTime(
+            realSecondsPerHour * (_building.FactoryShiftDurationHours - 0.5f));
+
+        Assert.AreEqual(7, time.CurrentHour);
+        Assert.AreSame(first, _building.CurrentFactoryShift);
+        Assert.AreEqual(0, _building.GetFactoryStoredAmount(ResourceType.Steel));
+
+        time.AdvanceTime(realSecondsPerHour * 0.5f);
 
         Assert.AreEqual(8, time.CurrentHour);
         Assert.AreEqual(3, _building.GetFactoryStoredAmount(ResourceType.Steel));
@@ -193,6 +203,14 @@ public sealed class FactoryScheduleTests
     {
         _buildingData.popRequiredForMaxEfficiency = 0;
         Assert.IsTrue(_building.TryAddFactoryShift(out FactoryShift shift));
+        Assert.IsTrue(_building.SetFactoryShiftDesiredResource(
+            shift,
+            ResourceType.IronOre,
+            0));
+        Assert.IsTrue(_building.SetFactoryShiftDesiredResource(
+            shift,
+            ResourceType.Wood,
+            0));
         Assert.AreEqual(
             0,
             shift.GetDesiredResourceAmount(ResourceType.IronOre));
@@ -218,22 +236,85 @@ public sealed class FactoryScheduleTests
             _building.GetFactoryStoredAmount(ResourceType.Wood));
     }
 
-    [Test]
-    public void AddedShiftUsesFactoryDurationAndDynamicRequirements()
+    [TestCase(FactoryShiftDuration.FourHours)]
+    [TestCase(FactoryShiftDuration.SixHours)]
+    [TestCase(FactoryShiftDuration.EightHours)]
+    public void AddedShiftDefaultsToMaximumWorkersInputsAndPreparation(
+        FactoryShiftDuration duration)
     {
+        _buildingData.shiftDuration = duration;
         Assert.IsTrue(_building.TryAddFactoryShift(out FactoryShift shift));
 
         Assert.AreEqual(0, shift.StartHour);
         Assert.IsFalse(shift.IsActive);
-        Assert.AreEqual(8, shift.GetEndHour(
+        Assert.AreEqual((int)duration, shift.GetEndHour(
             _building.FactoryShiftDurationHours));
-        Assert.AreEqual(1, shift.PreparationHours);
-        Assert.AreEqual(0, shift.DesiredPops);
+        Assert.AreEqual((int)duration, shift.PreparationHours);
+        Assert.AreEqual(12, shift.DesiredPops);
+        Assert.AreEqual(1f, _building.GetFactoryShiftEfficiency(shift));
         Assert.AreEqual(2, shift.DesiredResources.Count);
-        Assert.AreEqual(0,
+        Assert.AreEqual(4,
             shift.GetDesiredResourceAmount(ResourceType.IronOre));
+        Assert.AreEqual(2,
+            shift.GetDesiredResourceAmount(ResourceType.Wood));
         Assert.AreEqual(0,
             shift.GetDesiredResourceAmount(ResourceType.Steel));
+    }
+
+    [TestCase(-5, 25, 0)]
+    [TestCase(40, 25, 25)]
+    [TestCase(4, -1, 0)]
+    public void AddedShiftClampsInvalidResourceDefaults(
+        int consumption,
+        int capacity,
+        int expected)
+    {
+        ProductionResourceEntry resource = _buildingData.resources[0];
+        resource.amountAtMaximumEfficiency = consumption;
+        resource.storageCapacity = capacity;
+        _buildingData.resources[0] = resource;
+
+        Assert.IsTrue(_building.TryAddFactoryShift(out FactoryShift shift));
+
+        Assert.AreEqual(expected,
+            shift.GetDesiredResourceAmount(ResourceType.IronOre));
+    }
+
+    [TestCase(0)]
+    [TestCase(-5)]
+    public void AddedShiftHandlesNoWorkersOrResources(int workerCapacity)
+    {
+        _buildingData.popRequiredForMaxEfficiency = workerCapacity;
+        _buildingData.resources = null;
+
+        Assert.IsTrue(_building.TryAddFactoryShift(out FactoryShift shift));
+
+        Assert.AreEqual(0, shift.DesiredPops);
+        Assert.IsEmpty(shift.DesiredResources);
+        Assert.AreEqual(8, shift.PreparationHours);
+    }
+
+    [Test]
+    public void AddingShiftPreservesExistingShiftRequirements()
+    {
+        Assert.IsTrue(_building.TryAddFactoryShift(out FactoryShift existing));
+        Assert.IsTrue(_building.SetFactoryShiftPreparationHours(existing, 2));
+        Assert.IsTrue(_building.SetFactoryShiftDesiredPops(existing, 0));
+        Assert.IsTrue(_building.SetFactoryShiftDesiredResource(
+            existing,
+            ResourceType.IronOre,
+            0));
+
+        Assert.IsTrue(_building.TryAddFactoryShift(out FactoryShift added));
+
+        Assert.AreEqual(2, existing.PreparationHours);
+        Assert.AreEqual(0, existing.DesiredPops);
+        Assert.AreEqual(0,
+            existing.GetDesiredResourceAmount(ResourceType.IronOre));
+        Assert.AreEqual(8, added.PreparationHours);
+        Assert.AreEqual(12, added.DesiredPops);
+        Assert.AreEqual(4,
+            added.GetDesiredResourceAmount(ResourceType.IronOre));
     }
 
     [Test]
@@ -334,7 +415,7 @@ public sealed class FactoryScheduleTests
         Assert.AreEqual(1, first.StartHour);
         Assert.AreEqual(9, second.StartHour);
         Assert.AreEqual(17, third.StartHour);
-        Assert.AreEqual(0, first.GetPreparationStartHour());
+        Assert.AreEqual(17, first.GetPreparationStartHour());
     }
 
     [Test]

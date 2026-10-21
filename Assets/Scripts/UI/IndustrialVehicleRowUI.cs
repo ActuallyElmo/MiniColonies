@@ -121,10 +121,10 @@ public sealed class IndustrialVehicleRowUI : MonoBehaviour
             : null;
         owner?.GetCompatibleFactoryOutputs(vehicleData, compatibleOutputs);
 
-        var labels = new List<string> { "None" };
+        var labels = new List<TMP_Dropdown.OptionData> { new TMP_Dropdown.OptionData("None") };
         for (int i = 0; i < compatibleOutputs.Count; i++)
         {
-            labels.Add(NicifyName(compatibleOutputs[i].ToString()));
+            labels.Add(new TMP_Dropdown.OptionData(ResourceCatalog.GetDisplayName(compatibleOutputs[i]), ResourceCatalog.GetIcon(compatibleOutputs[i]), Color.white));
         }
 
         if (compatibleOutputs.Count == 0)
@@ -201,22 +201,4 @@ public sealed class IndustrialVehicleRowUI : MonoBehaviour
         return true;
     }
 
-    private static string NicifyName(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return name;
-
-        var result = new System.Text.StringBuilder(name.Length + 4);
-        result.Append(name[0]);
-        for (int i = 1; i < name.Length; i++)
-        {
-            if (char.IsUpper(name[i]) && !char.IsWhiteSpace(name[i - 1]))
-            {
-                result.Append(' ');
-            }
-
-            result.Append(name[i]);
-        }
-
-        return result.ToString();
-    }
 }

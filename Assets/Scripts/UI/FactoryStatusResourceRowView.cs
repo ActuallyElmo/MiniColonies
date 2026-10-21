@@ -16,6 +16,14 @@ public sealed class FactoryStatusResourceRowView : MonoBehaviour
 
     public void Bind(string resourceName, string amount)
     {
+        Bind(resourceName, amount, ResourceCatalog.Current != null ? ResourceCatalog.Current.fallbackIcon : null);
+    }
+
+    public void Bind(ResourceType resource, string amount) =>
+        Bind(ResourceCatalog.GetDisplayName(resource), amount, ResourceCatalog.GetIcon(resource));
+
+    public void Bind(string resourceName, string amount, Sprite icon)
+    {
         if (resourceNameText != null)
         {
             resourceNameText.gameObject.SetActive(true);
@@ -29,8 +37,9 @@ public sealed class FactoryStatusResourceRowView : MonoBehaviour
         }
         if (resourceIcon != null)
         {
-            resourceIcon.gameObject.SetActive(true);
-            resourceIcon.sprite = null;
+            resourceIcon.gameObject.SetActive(icon != null);
+            resourceIcon.sprite = icon;
+            resourceIcon.color = Color.white;
             resourceIcon.preserveAspect = true;
         }
     }

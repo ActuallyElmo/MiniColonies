@@ -154,7 +154,7 @@ public static class FactoryStatusTabSceneBuilder
         TMP_Text workerEfficiency = EnsureText(
             performance,
             "WorkerEfficiency",
-            "Worker efficiency: --",
+            "Staffing efficiency: --",
             8f,
             TextColor,
             12f);
@@ -165,10 +165,10 @@ public static class FactoryStatusTabSceneBuilder
             8f,
             TextColor,
             12f);
-        EnsureText(
+        TMP_Text throughputLabel = EnsureText(
             performance,
             "ThroughputLabel",
-            "Throughput per worker / hour (100% efficiency)",
+            "Throughput per factory worker / hour (100% efficiency)",
             7f,
             MutedText,
             10f);
@@ -179,6 +179,7 @@ public static class FactoryStatusTabSceneBuilder
 
         SerializedObject viewObject = new SerializedObject(view);
         SetReference(viewObject, "workerEfficiencyText", workerEfficiency);
+        SetReference(viewObject, "throughputLabel", throughputLabel);
         SetReference(viewObject, "shiftProgressText", shiftProgress);
         SetReference(viewObject, "throughputRowsRoot", throughputRows);
         viewObject.ApplyModifiedPropertiesWithoutUndo();
@@ -242,7 +243,7 @@ public static class FactoryStatusTabSceneBuilder
         preparedPops = EnsureText(
             preparation,
             "PreparedPops",
-            "Pops: --",
+            "Prepared factory workers: --",
             8f,
             TextColor,
             12f);
@@ -265,7 +266,7 @@ public static class FactoryStatusTabSceneBuilder
         currentWorkers = EnsureText(
             current,
             "CurrentWorkers",
-            "Workers: --",
+            "Working factory workers: --",
             8f,
             TextColor,
             12f);

@@ -1,0 +1,5 @@
+{
+    "name": "MiniColonies.PlayModeTests",
+    "references": ["Unity.ugui"],
+    "optionalUnityReferences": ["TestAssemblies"]
+}

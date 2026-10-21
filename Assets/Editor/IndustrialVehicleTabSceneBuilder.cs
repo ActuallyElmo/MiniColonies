@@ -731,6 +731,7 @@ public static class IndustrialVehicleTabSceneBuilder
             "X",
             new Color32(153, 67, 63, 255));
         Layout(remove.gameObject, 18f, 24f, 0f);
+        FactoryInputSelectorSetup.EnsureDropdownIcons(dropdown, true);
 
         SerializedObject rowObject = new SerializedObject(view);
         SetReference(rowObject, "vehicleIcon", icon);

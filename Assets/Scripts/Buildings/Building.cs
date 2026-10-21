@@ -158,6 +158,8 @@ public class Building : MonoBehaviour
     private readonly List<HourlyInputRequirement>
         _currentShiftHourlyInputRequirements =
             new List<HourlyInputRequirement>();
+    private readonly List<ProductionResourceEntry> _currentShiftInputRecipe =
+        new List<ProductionResourceEntry>();
 
     private FactoryShift _preparingFactoryShift;
     private FactoryShift _currentFactoryShift;
@@ -860,7 +862,7 @@ public class Building : MonoBehaviour
 
                 if (TryDispatchPopTransportVehicle(vAI))
                 {
-                    yield return new WaitForSeconds(1.5f); // Throttle departures to create a natural flow
+                    yield return GameTimeManager.WaitForSimulationSeconds(1.5f); // Throttle departures to create a natural flow
                 }
                 else 
                 {
@@ -1191,14 +1193,7 @@ public class Building : MonoBehaviour
 
         duplicateShift.SetPreparationHours(sourceShift.PreparationHours);
         duplicateShift.SetDesiredPops(sourceShift.DesiredPops);
-        IReadOnlyList<ResourceAmount> resources =
-            sourceShift.DesiredResources;
-        for (int i = 0; i < resources.Count; i++)
-        {
-            duplicateShift.SetDesiredResourceAmount(
-                resources[i].resourceType,
-                resources[i].amount);
-        }
+        duplicateShift.CopyInputSelectionsFrom(sourceShift);
 
         // A duplicate is always created disabled, even when its source is on.
         duplicateShift.SetActive(false);
@@ -1230,8 +1225,10 @@ public class Building : MonoBehaviour
 
         shift = new FactoryShift(
             startHour,
-            1,
-            GetRequiredResourceTypes(productionData));
+            FactoryShiftDurationHours,
+            null);
+        shift.SetDesiredPops(GetTargetPopCount());
+        shift.SynchronizeInputSlots(productionData, ResourceCatalog.Current, true);
         factoryShifts.Add(shift);
         return true;
     }
@@ -1352,7 +1349,8 @@ public class Building : MonoBehaviour
     public bool SetFactoryShiftActive(FactoryShift shift, bool isActive)
     {
         EnsureFactorySchedule();
-        if (!ContainsFactoryShift(shift) || shift.IsActive == isActive)
+        if (!ContainsFactoryShift(shift) || shift.IsActive == isActive ||
+            (isActive && !HasValidFactoryShiftInputs(shift)))
         {
             return false;
         }
@@ -1398,30 +1396,81 @@ public class Building : MonoBehaviour
         int amount)
     {
         EnsureFactorySchedule();
-        if (!ContainsFactoryShift(shift) ||
-            !TryGetProductionResource(
-                resourceType,
-                ProductionResourceDirection.Input,
-                out ProductionResourceEntry resource))
+        if (!ContainsFactoryShift(shift) || !(data is ResourceProductionBuildingData productionData)) return false;
+        int remaining = Mathf.Clamp(amount, 0, GetFactoryShiftResourceCapacity(resourceType));
+        bool found = false;
+        for (int i = 0; i < shift.InputSelections.Count; i++)
         {
-            return false;
+            FactoryShiftInput input = shift.InputSelections[i];
+            if (!input.hasSelection || input.resourceType != resourceType) continue;
+            int index = productionData.FindInputIndex(input.inputId);
+            if (index < 0) continue;
+            int assigned = Mathf.Min(remaining, Mathf.Max(0, productionData.resources[index].storageCapacity));
+            shift.SetInputDesiredAmount(input.inputId, assigned);
+            remaining -= assigned;
+            found = true;
         }
-
-        shift.SetDesiredResourceAmount(
-            resourceType,
-            Mathf.Clamp(amount, 0, resource.storageCapacity));
+        if (!found) return false;
         NotifyFactoryScheduleChanged();
         return true;
     }
 
+    public bool CanEditFactoryShiftInputs(FactoryShift shift) =>
+        shift != null && shift != _currentFactoryShift && shift != _preparingFactoryShift;
+
+    public bool TrySetFactoryShiftInputResource(FactoryShift shift, string inputId, ResourceType resource)
+    {
+        EnsureFactorySchedule();
+        if (!ContainsFactoryShift(shift) || !CanEditFactoryShiftInputs(shift) ||
+            !(data is ResourceProductionBuildingData productionData)) return false;
+        int index = productionData.FindInputIndex(inputId);
+        if (index < 0 || !ResourceProductionBuildingData.AcceptsInput(productionData.resources[index], resource, ResourceCatalog.Current) ||
+            !shift.TryGetInput(inputId, out _)) return false;
+        shift.SetInputResource(inputId, resource);
+        NotifyFactoryScheduleChanged();
+        return true;
+    }
+
+    public bool SetFactoryShiftDesiredInput(FactoryShift shift, string inputId, int amount)
+    {
+        EnsureFactorySchedule();
+        if (!ContainsFactoryShift(shift) || !(data is ResourceProductionBuildingData productionData)) return false;
+        int index = productionData.FindInputIndex(inputId);
+        if (index < 0 || !shift.TryGetInput(inputId, out _)) return false;
+        shift.SetInputDesiredAmount(inputId, Mathf.Clamp(amount, 0, Mathf.Max(0, productionData.resources[index].storageCapacity)));
+        NotifyFactoryScheduleChanged();
+        return true;
+    }
+
+    public bool HasValidFactoryShiftInputs(FactoryShift shift)
+    {
+        if (shift == null || !(data is ResourceProductionBuildingData productionData)) return false;
+        if (productionData.resources == null) return true;
+        for (int i = 0; i < productionData.resources.Count; i++)
+        {
+            ProductionResourceEntry entry = productionData.resources[i];
+            if (entry.direction != ProductionResourceDirection.Input) continue;
+            if (!shift.TryGetInput(productionData.GetInputId(i), out FactoryShiftInput input) || !input.hasSelection ||
+                !ResourceProductionBuildingData.AcceptsInput(entry, input.resourceType, ResourceCatalog.Current)) return false;
+        }
+        return true;
+    }
+
+    public int GetFactoryShiftInputRequiredAmount(FactoryShift shift, string inputId)
+    {
+        if (!(data is ResourceProductionBuildingData productionData)) return 0;
+        int index = productionData.FindInputIndex(inputId);
+        return index < 0 ? 0 : ScaleFactoryInputAmount(productionData.resources[index].amountAtMaximumEfficiency, GetFactoryShiftEfficiency(shift));
+    }
+
     public int GetFactoryShiftResourceCapacity(ResourceType resourceType)
     {
-        return TryGetProductionResource(
-            resourceType,
-            ProductionResourceDirection.Input,
-            out ProductionResourceEntry resource)
-            ? resource.storageCapacity
-            : 0;
+        int capacity = 0;
+        if (!(data is ResourceProductionBuildingData productionData) || productionData.resources == null) return 0;
+        for (int i = 0; i < productionData.resources.Count; i++)
+            if (ResourceProductionBuildingData.AcceptsInput(productionData.resources[i], resourceType, ResourceCatalog.Current))
+                capacity = Mathf.Max(capacity, productionData.resources[i].storageCapacity);
+        return capacity;
     }
 
     public float GetFactoryShiftEfficiency(FactoryShift shift)
@@ -1447,17 +1496,25 @@ public class Building : MonoBehaviour
         FactoryShift shift,
         ResourceType resourceType)
     {
-        if (!TryGetProductionResource(
-                resourceType,
-                ProductionResourceDirection.Input,
-                out ProductionResourceEntry resource))
+        EnsureFactorySchedule();
+        if (!ContainsFactoryShift(shift) || !(data is ResourceProductionBuildingData productionData)) return 0;
+        long required = 0;
+        for (int i = 0; i < shift.InputSelections.Count; i++)
         {
-            return 0;
+            FactoryShiftInput input = shift.InputSelections[i];
+            if (!input.hasSelection || input.resourceType != resourceType) continue;
+            int index = productionData.FindInputIndex(input.inputId);
+            if (index >= 0) required += Mathf.Max(0, productionData.resources[index].amountAtMaximumEfficiency);
         }
+        return ScaleFactoryInputAmount(required, GetFactoryShiftEfficiency(shift));
+    }
 
-        return Mathf.CeilToInt(
-            resource.amountAtMaximumEfficiency *
-            GetFactoryShiftEfficiency(shift));
+    private static int ScaleFactoryInputAmount(long amount, float efficiency)
+    {
+        // Keep the original float multiplication before rounding (for example,
+        // three units at 4/12 staffing should round to one, not two).
+        float scaled = Mathf.Max(0f, amount) * efficiency;
+        return scaled >= int.MaxValue ? int.MaxValue : Mathf.CeilToInt(scaled);
     }
 
     public bool IsFactoryScheduledAtHour(int hour)
@@ -1495,27 +1552,16 @@ public class Building : MonoBehaviour
 
         if (!(data is ResourceProductionBuildingData productionData)) return;
 
-        IEnumerable<ResourceType> resourceTypes =
-            GetRequiredResourceTypes(productionData);
         for (int i = 0; i < factoryShifts.Count; i++)
         {
             FactoryShift shift = factoryShifts[i];
             if (shift == null) continue;
 
-            shift.EnsureResourceTypes(resourceTypes);
+            shift.SynchronizeInputSlots(productionData, ResourceCatalog.Current);
             shift.SetDesiredPops(Mathf.Clamp(
                 shift.DesiredPops,
                 0,
                 GetTargetPopCount()));
-            foreach (ResourceType resourceType in resourceTypes)
-            {
-                shift.SetDesiredResourceAmount(
-                    resourceType,
-                    Mathf.Clamp(
-                        shift.GetDesiredResourceAmount(resourceType),
-                        0,
-                        GetFactoryShiftResourceCapacity(resourceType)));
-            }
             shift.SetPreparationHours(Mathf.Clamp(
                 shift.PreparationHours,
                 1,
@@ -1638,9 +1684,12 @@ public class Building : MonoBehaviour
         for (int i = 0; i < productionData.resources.Count; i++)
         {
             ProductionResourceEntry resource = productionData.resources[i];
-            if (resource.resourceType == resourceType &&
-                resource.direction == direction)
+            if (resource.direction == direction &&
+                (direction == ProductionResourceDirection.Input
+                    ? ResourceProductionBuildingData.AcceptsInput(resource, resourceType, ResourceCatalog.Current)
+                    : resource.resourceType == resourceType))
             {
+                resource.resourceType = resourceType;
                 matchingResource = resource;
                 return true;
             }
@@ -1649,31 +1698,26 @@ public class Building : MonoBehaviour
         return false;
     }
 
-    private static IEnumerable<ResourceType> GetRequiredResourceTypes(
-        ResourceProductionBuildingData productionData)
+    private void BuildFactoryShiftInputRecipe(FactoryShift shift, List<ProductionResourceEntry> results)
     {
-        var resourceTypes = new List<ResourceType>();
-        if (productionData.resources == null)
-        {
-            return resourceTypes;
-        }
-
+        results.Clear();
+        if (!(data is ResourceProductionBuildingData productionData) || productionData.resources == null) return;
         for (int i = 0; i < productionData.resources.Count; i++)
         {
-            ProductionResourceEntry resource = productionData.resources[i];
-            if (resource.direction != ProductionResourceDirection.Input)
+            ProductionResourceEntry entry = productionData.resources[i];
+            if (entry.direction != ProductionResourceDirection.Input ||
+                !shift.TryGetInput(productionData.GetInputId(i), out FactoryShiftInput input) || !input.hasSelection) continue;
+            entry.resourceType = input.resourceType;
+            int existingIndex = results.FindIndex(item => item.resourceType == input.resourceType);
+            if (existingIndex >= 0)
             {
-                continue;
+                ProductionResourceEntry existing = results[existingIndex];
+                existing.amountAtMaximumEfficiency = (int)System.Math.Min(int.MaxValue,
+                    (long)Mathf.Max(0, existing.amountAtMaximumEfficiency) + Mathf.Max(0, entry.amountAtMaximumEfficiency));
+                results[existingIndex] = existing;
             }
-
-            ResourceType resourceType = resource.resourceType;
-            if (!resourceTypes.Contains(resourceType))
-            {
-                resourceTypes.Add(resourceType);
-            }
+            else results.Add(entry);
         }
-
-        return resourceTypes;
     }
 
     private void NotifyFactoryScheduleChanged()
@@ -1818,9 +1862,10 @@ public class Building : MonoBehaviour
         int targetAmount = Mathf.Min(
             shift.GetDesiredResourceAmount(resourceType),
             GetFactoryResourceCapacity(resourceType));
-        return Mathf.Max(
-            0,
-            targetAmount - GetFactoryStoredAmount(resourceType));
+        int stored = GetFactoryStoredAmount(resourceType);
+        int inProcess = Mathf.Max(0, GetResourceAmount(_currentShiftAllocatedInputs, resourceType) -
+            GetResourceAmount(_currentShiftProcessedInputs, resourceType));
+        return Mathf.Max(0, Mathf.Min(targetAmount - stored, GetFactoryResourceCapacity(resourceType) - stored - inProcess));
     }
 
     public void GetRemainingFactoryInputDemands(
@@ -1831,19 +1876,16 @@ public class Building : MonoBehaviour
         SynchronizeFactoryRuntimeAtCurrentTime(false);
 
         FactoryShift shift = _preparingFactoryShift;
-        if (shift == null ||
-            !(data is ResourceProductionBuildingData productionData) ||
-            productionData.resources == null)
+        if (shift == null)
         {
             return;
         }
 
         var added = new HashSet<ResourceType>();
-        for (int i = 0; i < productionData.resources.Count; i++)
+        for (int i = 0; i < shift.DesiredResources.Count; i++)
         {
-            ProductionResourceEntry entry = productionData.resources[i];
-            if (entry.direction != ProductionResourceDirection.Input ||
-                !added.Add(entry.resourceType))
+            ResourceAmount entry = shift.DesiredResources[i];
+            if (!added.Add(entry.resourceType))
             {
                 continue;
             }
@@ -1863,23 +1905,8 @@ public class Building : MonoBehaviour
 
     public int GetFactoryResourceCapacity(ResourceType resourceType)
     {
-        if (!(data is ResourceProductionBuildingData productionData) ||
-            productionData.resources == null)
-        {
-            return 0;
-        }
-
-        int capacity = 0;
-        for (int i = 0; i < productionData.resources.Count; i++)
-        {
-            ProductionResourceEntry entry = productionData.resources[i];
-            if (entry.resourceType == resourceType)
-            {
-                capacity = Mathf.Max(capacity, entry.storageCapacity);
-            }
-        }
-
-        return capacity;
+        return data is ResourceProductionBuildingData productionData
+            ? productionData.GetResourceCapacity(resourceType, ResourceCatalog.Current) : 0;
     }
 
     public float GetFactoryResourceThroughputPerWorkerPerHour(
@@ -2004,46 +2031,18 @@ public class Building : MonoBehaviour
             factoryStorage = new List<ResourceAmount>();
         }
 
-        if (!(data is ResourceProductionBuildingData productionData) ||
-            productionData.resources == null)
-        {
-            return;
-        }
-
-        bool initializeToDefaults = !factoryStorageInitialized;
-        var synchronized = new List<ResourceAmount>();
-        var added = new HashSet<ResourceType>();
+        if (factoryStorageInitialized || !(data is ResourceProductionBuildingData productionData) ||
+            productionData.resources == null) return;
+        // Retain the old starter stock only for legacy exact-input factories.
+        // Typed inputs start empty rather than filling a bin for every possible material.
         for (int i = 0; i < productionData.resources.Count; i++)
         {
             ProductionResourceEntry entry = productionData.resources[i];
-            if (!added.Add(entry.resourceType)) continue;
-
-            bool isInput = HasProductionResourceDirection(
-                entry.resourceType,
-                ProductionResourceDirection.Input);
-            bool isOutput = HasProductionResourceDirection(
-                entry.resourceType,
-                ProductionResourceDirection.Output);
-            int amount = initializeToDefaults
-                ? isInput
-                    ? GetFactoryResourceCapacity(entry.resourceType)
-                    : 0
-                : GetResourceAmount(factoryStorage, entry.resourceType);
-            synchronized.Add(new ResourceAmount
-            {
-                resourceType = entry.resourceType,
-                // Output created by a shift is allowed to overfill storage;
-                // that excess is visible and blocks future shift starts.
-                amount = isOutput
-                    ? Mathf.Max(0, amount)
-                    : Mathf.Clamp(
-                        amount,
-                        0,
-                        GetFactoryResourceCapacity(entry.resourceType))
-            });
+            if (entry.direction != ProductionResourceDirection.Input || ResourceProductionBuildingData.UsesTypes(entry)) continue;
+            if (GetResourceAmount(factoryStorage, entry.resourceType) <= 0)
+                SetResourceAmount(factoryStorage, entry.resourceType, GetFactoryResourceCapacity(entry.resourceType));
         }
-
-        factoryStorage = synchronized;
+        // Existing stock survives selection, rule and capacity changes, including overfill.
         factoryStorageInitialized = true;
     }
 
@@ -2184,6 +2183,7 @@ public class Building : MonoBehaviour
         _currentShiftProcessedInputExact.Clear();
         _currentShiftHourlyInputRequirements.Clear();
         _currentShiftPendingOutputs.Clear();
+        BuildFactoryShiftInputRecipe(shift, _currentShiftInputRecipe);
         _currentShiftAccumulatedProductionHours = 0f;
         RefreshCurrentWorkingPops();
         AllocateInputsForCurrentWorkers();
@@ -2209,10 +2209,10 @@ public class Building : MonoBehaviour
         if (data is ResourceProductionBuildingData productionData &&
             productionData.resources != null)
         {
-            for (int i = 0; i < productionData.resources.Count; i++)
+            for (int i = 0; i < _currentShiftInputRecipe.Count; i++)
             {
                 ProductionResourceEntry entry =
-                    productionData.resources[i];
+                    _currentShiftInputRecipe[i];
                 if (entry.direction != ProductionResourceDirection.Input ||
                     entry.amountAtMaximumEfficiency <= 0)
                 {
@@ -2342,6 +2342,7 @@ public class Building : MonoBehaviour
         _currentShiftProcessedInputExact.Clear();
         _currentShiftHourlyInputRequirements.Clear();
         _currentShiftPendingOutputs.Clear();
+        _currentShiftInputRecipe.Clear();
         _currentShiftAccumulatedProductionHours = 0f;
         ReleasePopAssignmentsForShift(finishedShift);
     }
@@ -2364,9 +2365,9 @@ public class Building : MonoBehaviour
             0,
             duration - _currentShiftElapsedHours);
 
-        for (int i = 0; i < productionData.resources.Count; i++)
+        for (int i = 0; i < _currentShiftInputRecipe.Count; i++)
         {
-            ProductionResourceEntry entry = productionData.resources[i];
+            ProductionResourceEntry entry = _currentShiftInputRecipe[i];
             if (entry.direction != ProductionResourceDirection.Input)
             {
                 continue;
@@ -2433,7 +2434,7 @@ public class Building : MonoBehaviour
             if (entry.direction == ProductionResourceDirection.Output &&
                 entry.amountAtMaximumEfficiency > 0 &&
                 GetFactoryStoredAmount(entry.resourceType) >=
-                entry.storageCapacity)
+                GetFactoryResourceCapacity(entry.resourceType))
             {
                 return true;
             }
@@ -2471,7 +2472,7 @@ public class Building : MonoBehaviour
         for (int i = 0; i < factoryShifts.Count; i++)
         {
             FactoryShift shift = factoryShifts[i];
-            if (shift != null && shift.IsActive &&
+            if (shift != null && shift.IsActive && HasValidFactoryShiftInputs(shift) &&
                 ShiftContainsHour(
                     shift.StartHour,
                     FactoryShiftDurationHours,
@@ -2489,7 +2490,7 @@ public class Building : MonoBehaviour
         for (int i = 0; i < factoryShifts.Count; i++)
         {
             FactoryShift shift = factoryShifts[i];
-            if (shift == null || !shift.IsActive) continue;
+            if (shift == null || !shift.IsActive || !HasValidFactoryShiftInputs(shift)) continue;
 
             int preparationStart = shift.GetPreparationStartHour();
             int offset = FactoryShift.WrapHour(hour - preparationStart);

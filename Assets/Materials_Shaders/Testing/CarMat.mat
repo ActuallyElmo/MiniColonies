@@ -101,8 +101,8 @@ Material:
     - _GlossMapScale: 0
     - _Glossiness: 0
     - _GlossyReflections: 0
-    - _GradientSteps: 5.17
-    - _MaxHeight: 0.17
+    - _GradientSteps: 2.32
+    - _MaxHeight: 1.5
     - _Metallic: 0
     - _OcclusionStrength: 1
     - _Parallax: 0.005
@@ -127,7 +127,7 @@ Material:
     - _LitColor: {r: 1, g: 0.72713655, b: 0.2971698, a: 0}
     - _ShadowColor: {r: 0.4960395, g: 0.56554824, b: 0.6698113, a: 0}
     - _SpecColor: {r: 0.19999996, g: 0.19999996, b: 0.19999996, a: 1}
-    - _TopColor: {r: 0.745283, g: 0.745283, b: 0.745283, a: 0}
+    - _TopColor: {r: 0.29592383, g: 0.38567248, b: 0.6603774, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1
 --- !u!114 &5295439730959403790

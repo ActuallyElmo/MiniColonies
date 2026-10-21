@@ -377,6 +377,7 @@ public class RoadSystemBackend : MonoBehaviour
     public bool CanPlaceRoadTypeAt(Vector2Int cell, RoadType roadType)
     {
         if (roadType == null) return false;
+        if (WorldManager.Instance != null && WorldManager.Instance.IsResourceBlockingCell(cell.x, cell.y)) return false;
 
         BuildingSystemBackend buildingSystem = BuildingSystemBackend.Instance;
         if (buildingSystem == null) return true;
@@ -932,11 +933,93 @@ public class RoadSystemBackend : MonoBehaviour
         return true;
     }
 
+    public bool TrySetIntersectionConnection(RoadNetworkSnapshot source, TrafficGraphSnapshot graph,
+        ControlledNodeId intersection, LaneId entry, LaneId exit, bool connected)
+    {
+        // Reject repeat clicks against a graph whose replacement is still compiling.
+        if (source == null || !source.MatchesCurrentSources(this, BuildingSystemBackend.Instance) ||
+            !IntersectionConnectionEditing.TryCreateRules(source, graph, intersection,
+                entry, exit, connected, out var rules) ||
+            !graph.TryGetControlledNode(intersection, out var node)) return false;
+        var data = GetEditableIntersection(node.GridPosition);
+        if (data == null) return false;
+        data.ReplaceConnections(
+            rules,
+            IntersectionConnectionEditing.CollectIncomingSources(graph, node));
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
+        return true;
+    }
+
+    public bool TryClearIntersectionConnections(RoadNetworkSnapshot source,
+        TrafficGraphSnapshot graph, ControlledNodeId intersection)
+    {
+        if (!TryGetIntersectionForConnectionReset(source, graph, intersection,
+                out var node, out var data)) return false;
+        data.ReplaceConnections(
+            System.Array.Empty<LaneConnectionRule>(),
+            IntersectionConnectionEditing.CollectIncomingSources(graph, node));
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
+        return true;
+    }
+
+    public bool TryRestoreDefaultIntersectionConnections(RoadNetworkSnapshot source,
+        TrafficGraphSnapshot graph, ControlledNodeId intersection)
+    {
+        if (!TryGetIntersectionForConnectionReset(source, graph, intersection,
+                out _, out var data)) return false;
+        if (data.RestoreDefaultConnections())
+            RoadNetworkManager.Instance?.CommitNetworkChanges();
+        return true;
+    }
+
+    private bool TryGetIntersectionForConnectionReset(RoadNetworkSnapshot source,
+        TrafficGraphSnapshot graph, ControlledNodeId intersection,
+        out ControlledNodeRecord node, out IntersectionData data)
+    {
+        node = null;
+        data = null;
+        if (source == null || graph == null ||
+            source.RoadAuthoringRevision != graph.SourceRoadRevision ||
+            source.BuildingAuthoringRevision != graph.SourceBuildingRevision ||
+            !source.MatchesCurrentSources(this, BuildingSystemBackend.Instance) ||
+            !graph.TryGetControlledNode(intersection, out node) ||
+            node.NodeKind != RoadNodeKind.Intersection) return false;
+        data = GetEditableIntersection(node.GridPosition);
+        return data != null;
+    }
+
+    public bool TrySetIntersectionTrafficLightIndex(RoadNetworkSnapshot source,
+        TrafficGraphSnapshot graph, ControlledNodeId intersection, LaneId incomingLane, int index)
+    {
+        if (index < 0 || index > 9 || source == null || graph == null ||
+            source.RoadAuthoringRevision != graph.SourceRoadRevision ||
+            source.BuildingAuthoringRevision != graph.SourceBuildingRevision ||
+            !source.MatchesCurrentSources(this, BuildingSystemBackend.Instance) ||
+            !graph.TryGetControlledNode(intersection, out var node) ||
+            node.NodeKind != RoadNodeKind.Intersection ||
+            !IntersectionControlUtility.UsesTrafficLights(node.RuleType) ||
+            !IntersectionConnectionEditing.Contains(node.IncomingLaneIds, incomingLane) ||
+            !graph.TryGetLane(incomingLane, out var lane)) return false;
+        IntersectionData data = GetEditableIntersection(node.GridPosition);
+        if (data == null || !IntersectionControlUtility.UsesTrafficLights(data.RuleType)) return false;
+        int mask = 0;
+        for (int i = 0; i < node.IncomingLaneIds.Count; i++)
+            if (graph.TryGetLane(node.IncomingLaneIds[i], out var entry)) mask |= entry.EndLegDirectionBit;
+        if (IntersectionControlUtility.GetTrafficLightIndex(lane.EndLegDirectionBit,
+                lane.LaneOrdinal, mask, data.TrafficLightIndices) == index) return true;
+        data.SetTrafficLightIndex(lane.EndLegDirectionBit, lane.LaneOrdinal, index);
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
+        return true;
+    }
+
     public bool SetIntersectionRuleType(Vector2Int cell, IntersectionRuleType ruleType)
     {
+        if (!IntersectionControlUtility.IsPlayerSelectable(ruleType)) return false;
         IntersectionData data = GetEditableIntersection(cell);
         if (data == null) return false;
+        if (data.RuleType == ruleType) return true;
         data.RuleType = ruleType;
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
         return true;
     }
 
@@ -946,8 +1029,16 @@ public class RoadSystemBackend : MonoBehaviour
         int priorityDirectionBitB)
     {
         IntersectionData data = GetEditableIntersection(cell);
-        if (data == null) return false;
+        if (data == null || !_roads.TryGetValue(cell, out RoadCell roadCell) ||
+            !IntersectionControlUtility.IsDirectionBit(priorityDirectionBitA) ||
+            !IntersectionControlUtility.IsDirectionBit(priorityDirectionBitB) ||
+            priorityDirectionBitA == priorityDirectionBitB ||
+            !roadCell.HasConnection(priorityDirectionBitA) ||
+            !roadCell.HasConnection(priorityDirectionBitB)) return false;
+        if (data.PriorityDirectionBitA == priorityDirectionBitA &&
+            data.PriorityDirectionBitB == priorityDirectionBitB) return true;
         data.SetPriorityDirections(priorityDirectionBitA, priorityDirectionBitB);
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
         return true;
     }
 
@@ -955,7 +1046,21 @@ public class RoadSystemBackend : MonoBehaviour
     {
         IntersectionData data = GetEditableIntersection(cell);
         if (data == null) return false;
-        data.TrafficLightCycleSeconds = cycleSeconds;
+        float validated = IntersectionControlUtility.ValidateLightDuration(cycleSeconds);
+        if (data.TrafficLightCycleSeconds.Equals(validated)) return true;
+        data.TrafficLightCycleSeconds = validated;
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
+        return true;
+    }
+
+    public bool SetIntersectionSmartTrafficLightWait(Vector2Int cell, float seconds)
+    {
+        IntersectionData data = GetEditableIntersection(cell);
+        if (data == null) return false;
+        float validated = IntersectionControlUtility.ValidateSmartWait(seconds);
+        if (data.SmartTrafficLightWaitSeconds.Equals(validated)) return true;
+        data.SmartTrafficLightWaitSeconds = validated;
+        RoadNetworkManager.Instance?.CommitNetworkChanges();
         return true;
     }
 

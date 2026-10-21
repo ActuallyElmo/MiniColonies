@@ -13,6 +13,7 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
     [Header("Factory Performance")]
     [SerializeField] private TMP_Text workerEfficiencyText;
     [SerializeField] private TMP_Text shiftProgressText;
+    [SerializeField] private TMP_Text throughputLabel;
     [SerializeField] private RectTransform throughputRowsRoot;
 
     [Header("Storage")]
@@ -89,56 +90,45 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
             SetText(currentShiftStateText, "No factory selected");
             SetText(currentWorkersText, string.Empty);
             SetText(currentEfficiencyText, string.Empty);
-            SetText(workerEfficiencyText, "Worker efficiency: --");
+            SetText(workerEfficiencyText, "Staffing efficiency: --");
+            SetText(throughputLabel, string.Empty);
             SetText(shiftProgressText, "Shift progress: --");
             return;
         }
 
+        // Bind the existing authored label for scenes created before this reference existed.
+        if (throughputLabel == null && throughputRowsRoot != null)
+        {
+            throughputLabel = throughputRowsRoot.parent
+                ?.Find("ThroughputLabel")?.GetComponent<TMP_Text>();
+        }
+        SetText(
+            throughputLabel,
+            $"Throughput per {productionData.WorkerRoleName} / hour " +
+            "(100% efficiency)");
         RebuildPerformance(productionData);
-        RebuildStorage(productionData);
-        RefreshPreparation();
+        RebuildStorage();
+        RefreshPreparation(productionData);
         RefreshCurrentShift(productionData);
         RebuildLayout();
     }
 
-    private void RebuildStorage(ResourceProductionBuildingData productionData)
+    private void RebuildStorage()
     {
-        if (productionData.resources == null) return;
-
-        RebuildStorageDirection(
-            productionData,
-            ProductionResourceDirection.Input,
-            "Incoming Resources");
-        RebuildStorageDirection(
-            productionData,
-            ProductionResourceDirection.Output,
-            "Outgoing Resources");
-    }
-
-    private void RebuildStorageDirection(
-        ResourceProductionBuildingData productionData,
-        ProductionResourceDirection direction,
-        string header)
-    {
+        IReadOnlyList<ResourceAmount> stored = _building.FactoryStorage;
         var displayed = new HashSet<ResourceType>();
-        bool headerSpawned = false;
-        for (int i = 0; i < productionData.resources.Count; i++)
+        for (int i = 0; i < stored.Count; i++)
         {
-            ProductionResourceEntry resource = productionData.resources[i];
-            if (resource.direction != direction) continue;
+            ResourceAmount resource = stored[i];
+            if (resource.amount <= 0) continue;
             if (!displayed.Add(resource.resourceType)) continue;
-
-            if (!headerSpawned)
-            {
-                SpawnHeader(storageRowsRoot, header);
-                headerSpawned = true;
-            }
             SpawnRow(
                 storageRowsRoot,
-                Nicify(resource.resourceType.ToString()),
-                $"{_building.GetFactoryStoredAmount(resource.resourceType)}" +
+                resource.resourceType,
+                $"{resource.amount}" +
                 $" / {_building.GetFactoryResourceCapacity(resource.resourceType)}");
         }
+        if (displayed.Count == 0) SpawnHeader(storageRowsRoot, "Storage empty");
     }
 
     private void RebuildPerformance(
@@ -171,24 +161,29 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
                 SpawnHeader(throughputRowsRoot, header);
                 headerSpawned = true;
             }
-            float throughput = _building
-                .GetFactoryResourceThroughputPerWorkerPerHour(
-                    resource.resourceType,
-                    resource.direction);
+            int workers = _building.GetTargetPopCount();
+            int hours = _building.FactoryShiftDurationHours;
+            float throughput = workers <= 0 || hours <= 0 ? 0f :
+                Mathf.Max(0, resource.amountAtMaximumEfficiency) / (float)(workers * hours);
+            bool typedInput = direction == ProductionResourceDirection.Input;
             SpawnRow(
                 throughputRowsRoot,
-                Nicify(resource.resourceType.ToString()),
-                $"{throughput:0.####} / worker / hr");
+                typedInput ? productionData.GetInputName(i) : ResourceCatalog.GetDisplayName(resource.resourceType),
+                $"{throughput:0.####} / {productionData.WorkerRoleName} / hr",
+                typedInput && ResourceProductionBuildingData.UsesTypes(resource)
+                    ? ResourceCatalog.Current?.fallbackIcon : ResourceCatalog.GetIcon(resource.resourceType));
         }
     }
 
-    private void RefreshPreparation()
+    private void RefreshPreparation(ResourceProductionBuildingData productionData)
     {
         FactoryShift shift = _building.PreparingFactoryShift;
         if (shift == null)
         {
             SetText(preparationStateText, "No shift is being prepared");
-            SetText(preparedPopsText, "Pops: --");
+            SetText(
+                preparedPopsText,
+                $"Prepared {productionData.WorkerRoleNamePlural}: --");
             return;
         }
 
@@ -198,7 +193,8 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
             $"{FormatHour(shift.GetEndHour(_building.FactoryShiftDurationHours))}");
         SetText(
             preparedPopsText,
-            $"Pops arrived {_building.PreparedPops}/{shift.DesiredPops}" +
+            $"Arrived {productionData.WorkerRoleNamePlural}: " +
+            $"{_building.PreparedPops}/{shift.DesiredPops}" +
             $"   •   incoming {_building.PreparedIncomingPops}");
     }
 
@@ -213,9 +209,13 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
                 _building.IsFactoryOutputStorageBlocked
                     ? "Output storage full — next shift blocked"
                     : "No shift currently running");
-            SetText(currentWorkersText, "Workers: --");
+            SetText(
+                currentWorkersText,
+                $"Working {productionData.WorkerRoleNamePlural}: --");
             SetText(currentEfficiencyText, string.Empty);
-            SetText(workerEfficiencyText, "Worker efficiency: --");
+            SetText(
+                workerEfficiencyText,
+                $"Efficiency ({productionData.WorkerRoleNamePlural}): --");
             SetText(shiftProgressText, "Shift progress: --");
             RebuildCurrentShiftResources(productionData, null);
             return;
@@ -230,12 +230,14 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
             : string.Empty;
         SetText(
             currentWorkersText,
-            $"Working {_building.CurrentWorkingPops}/{shift.DesiredPops}" +
+            $"Working {productionData.WorkerRoleNamePlural}: " +
+            $"{_building.CurrentWorkingPops}/{shift.DesiredPops}" +
             lateSuffix);
         SetText(currentEfficiencyText, string.Empty);
         SetText(
             workerEfficiencyText,
-            $"Worker efficiency: {_building.CurrentFactoryEfficiency:P0}");
+            $"Efficiency ({productionData.WorkerRoleNamePlural}): " +
+            $"{_building.CurrentFactoryEfficiency:P0}");
         SetText(
             shiftProgressText,
             $"Shift progress: hour {_building.CurrentShiftElapsedHours + 1}/" +
@@ -266,52 +268,20 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
             currentInputRowsRoot.gameObject.SetActive(hasInputs);
         }
 
-        if (productionData.resources == null) return;
-
         IReadOnlyList<ResourceAmount> remaining = shift != null
             ? _building.CurrentShiftInputsRemaining
             : null;
         IReadOnlyList<ResourceAmount> outputs = shift != null
             ? _building.CurrentShiftPendingOutputs
             : null;
-        var displayedInputs = new HashSet<ResourceType>();
-        var displayedOutputs = new HashSet<ResourceType>();
-
-        for (int i = 0; i < productionData.resources.Count; i++)
+        if (remaining != null)
         {
-            ProductionResourceEntry resource = productionData.resources[i];
-            bool isInput;
-            if (resource.direction == ProductionResourceDirection.Input)
-            {
-                isInput = true;
-            }
-            else if (resource.direction == ProductionResourceDirection.Output)
-            {
-                isInput = false;
-            }
-            else
-            {
-                continue;
-            }
-
-            HashSet<ResourceType> displayed = isInput
-                ? displayedInputs
-                : displayedOutputs;
-            if (!displayed.Add(resource.resourceType)) continue;
-
-            IReadOnlyList<ResourceAmount> amounts = isInput
-                ? remaining
-                : outputs;
-            string amount = shift == null
-                ? "-"
-                : isInput
-                    ? $"{GetAmount(amounts, resource.resourceType)} unprocessed"
-                    : $"{GetAmount(amounts, resource.resourceType)} pending";
-            SpawnRow(
-                isInput ? currentInputRowsRoot : pendingOutputRowsRoot,
-                Nicify(resource.resourceType.ToString()),
-                amount);
+            for (int i = 0; i < remaining.Count; i++)
+                SpawnRow(currentInputRowsRoot, remaining[i].resourceType, $"{remaining[i].amount} unprocessed");
         }
+        if (outputs != null)
+            for (int i = 0; i < outputs.Count; i++)
+                SpawnRow(pendingOutputRowsRoot, outputs[i].resourceType, $"{outputs[i].amount} pending");
     }
 
     private static bool HasResourcesInDirection(
@@ -331,23 +301,10 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
         return false;
     }
 
-    private static int GetAmount(
-        IReadOnlyList<ResourceAmount> resources,
-        ResourceType resourceType)
-    {
-        if (resources == null) return 0;
-        for (int i = 0; i < resources.Count; i++)
-        {
-            if (resources[i].resourceType == resourceType)
-            {
-                return resources[i].amount;
-            }
-        }
+    private void SpawnRow(RectTransform parent, ResourceType resource, string amount) =>
+        SpawnRow(parent, ResourceCatalog.GetDisplayName(resource), amount, ResourceCatalog.GetIcon(resource));
 
-        return 0;
-    }
-
-    private void SpawnRow(RectTransform parent, string label, string amount)
+    private void SpawnRow(RectTransform parent, string label, string amount, Sprite icon = null)
     {
         if (parent == null || resourceRowPrefab == null) return;
 
@@ -356,7 +313,7 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
             parent,
             false);
         row.gameObject.SetActive(true);
-        row.Bind(label, amount);
+        row.Bind(label, amount, icon);
         _spawnedRows.Add(row);
     }
 
@@ -416,19 +373,4 @@ public sealed class FactoryOperationsTabView : MonoBehaviour
         return $"{FactoryShift.WrapHour(hour):00}:00";
     }
 
-    private static string Nicify(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return name;
-        var result = new System.Text.StringBuilder(name.Length + 4);
-        result.Append(name[0]);
-        for (int i = 1; i < name.Length; i++)
-        {
-            if (char.IsUpper(name[i]) && !char.IsWhiteSpace(name[i - 1]))
-            {
-                result.Append(' ');
-            }
-            result.Append(name[i]);
-        }
-        return result.ToString();
-    }
 }

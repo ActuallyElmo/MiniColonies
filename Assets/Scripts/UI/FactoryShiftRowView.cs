@@ -11,7 +11,7 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
 {
     private const float FixedRowHeight = 75f;
     private const float RowHeightWithoutResources = 63f;
-    private const float ResourceRowHeight = 13f;
+    private const float ResourceRowHeight = 18f;
 
     [Header("Sizing")]
     [SerializeField] private LayoutElement layoutElement;
@@ -39,6 +39,7 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
     [SerializeField] private Button laterPreparationButton;
 
     [Header("Population Row")]
+    [SerializeField] private TMP_Text workerRoleText;
     [SerializeField] private TMP_Text desiredPopsText;
     [SerializeField] private Button decreasePopsButton;
     [SerializeField] private Button increasePopsButton;
@@ -81,7 +82,13 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
             shiftActiveToggle.onValueChanged.AddListener(isActive =>
             {
                 UpdateActiveToggleVisual(isActive);
-                building.SetFactoryShiftActive(shift, isActive);
+                if (!building.SetFactoryShiftActive(shift, isActive) && shift.IsActive != isActive)
+                {
+                    shiftActiveToggle.SetIsOnWithoutNotify(shift.IsActive);
+                    UpdateActiveToggleVisual(shift.IsActive);
+                    setStatus?.Invoke("Choose a valid material for every input before activating this shift.");
+                    return;
+                }
                 setStatus?.Invoke(string.Empty);
             });
         }
@@ -154,7 +161,8 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
         Building building,
         FactoryShift shift)
     {
-        IReadOnlyList<ResourceAmount> resources = shift.DesiredResources;
+        IReadOnlyList<FactoryShiftInput> inputs = shift.InputSelections;
+        ResourceProductionBuildingData productionData = building.data as ResourceProductionBuildingData;
         bool hasResources = HasInputResources(building);
         if (resourcesHeadingText == null)
         {
@@ -194,14 +202,20 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
             Destroy(child.gameObject);
         }
 
-        for (int i = 0; hasResources && i < resources.Count; i++)
+        for (int i = 0; hasResources && i < inputs.Count; i++)
         {
-            ResourceType resourceType = resources[i].resourceType;
+            FactoryShiftInput input = inputs[i];
+            string inputId = input.inputId;
+            int entryIndex = productionData.FindInputIndex(inputId);
+            if (entryIndex < 0) continue;
+            ProductionResourceEntry entry = productionData.resources[entryIndex];
+            var allowed = new List<ResourceType>();
+            productionData.GetAllowedInputResources(entryIndex, ResourceCatalog.Current, allowed);
             FactoryResourceAmountRowView resourceRow = Instantiate(
                 resourceRowTemplate,
                 resourcesRoot,
                 false);
-            resourceRow.name = NicifyName(resourceType.ToString());
+            resourceRow.name = productionData.GetInputName(entryIndex);
 
             LayoutElement resourceLayout =
                 resourceRow.GetComponent<LayoutElement>();
@@ -217,22 +231,21 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
             }
 
             resourceRow.gameObject.SetActive(true);
-            resourceRow.Bind(
-                NicifyName(resourceType.ToString()),
-                shift.GetDesiredResourceAmount(resourceType),
-                building.GetFactoryShiftRequiredResourceAmount(
-                    shift,
-                    resourceType),
+            resourceRow.BindInput(
+                productionData.GetInputName(entryIndex), allowed, input,
+                building.GetFactoryShiftInputRequiredAmount(shift, inputId),
+                ResourceProductionBuildingData.UsesTypes(entry), building.CanEditFactoryShiftInputs(shift),
+                selected => building.TrySetFactoryShiftInputResource(shift, inputId, selected),
                 () => ChangeResource(
                     building,
                     shift,
-                    resourceType,
+                    inputId, entry.storageCapacity,
                     false),
                 () => ChangeResource(
                     building,
                     shift,
-                    resourceType,
-                    true));
+                    inputId, entry.storageCapacity,
+                    true), entry.requiredTypes);
         }
 
         VerticalLayoutGroup resourcesLayout =
@@ -240,7 +253,7 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
         float resourceSpacing = resourcesLayout != null
             ? resourcesLayout.spacing
             : 0f;
-        int displayedResourceCount = hasResources ? resources.Count : 0;
+        int displayedResourceCount = hasResources ? inputs.Count : 0;
         float resourcesHeight =
             displayedResourceCount * ResourceRowHeight +
             Mathf.Max(0, displayedResourceCount - 1) * resourceSpacing;
@@ -250,6 +263,18 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
         if (transform is RectTransform rowRect)
         {
             LayoutRebuilder.ForceRebuildLayoutImmediate(rowRect);
+        }
+    }
+
+    public void RefreshInputAvailability(Building building)
+    {
+        if (resourcesRoot == null) return;
+        bool canSelect = building != null && building.CanEditFactoryShiftInputs(_boundShift);
+        for (int i = 0; i < resourcesRoot.childCount; i++)
+        {
+            Transform child = resourcesRoot.GetChild(i);
+            if (child.gameObject.activeSelf && child.TryGetComponent<FactoryResourceAmountRowView>(out var row))
+                row.SetInputSelectionInteractable(canSelect);
         }
     }
 
@@ -303,6 +328,19 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
 
     private void RefreshValues(Building building, FactoryShift shift)
     {
+        // Existing row prefabs already contain this editable label.
+        if (workerRoleText == null)
+        {
+            workerRoleText = transform.Find("PopulationRow/Label")
+                ?.GetComponent<TMP_Text>();
+        }
+        if (workerRoleText != null &&
+            building.data is ResourceProductionBuildingData productionData)
+        {
+            string role = productionData.WorkerRoleNamePlural;
+            workerRoleText.text = char.ToUpperInvariant(role[0]) + role.Substring(1);
+        }
+
         if (startHourText != null)
         {
             startHourText.text = FormatHour(shift.StartHour);
@@ -343,15 +381,17 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
     private static void ChangeResource(
         Building building,
         FactoryShift shift,
-        ResourceType resourceType,
+        string inputId,
+        int capacity,
         bool increase)
     {
-        building.SetFactoryShiftDesiredResource(
+        if (!shift.TryGetInput(inputId, out FactoryShiftInput input)) return;
+        building.SetFactoryShiftDesiredInput(
             shift,
-            resourceType,
+            inputId,
             AdjustAmount(
-                shift.GetDesiredResourceAmount(resourceType),
-                building.GetFactoryShiftResourceCapacity(resourceType),
+                input.desiredAmount,
+                capacity,
                 increase));
     }
 
@@ -553,22 +593,4 @@ public sealed class FactoryShiftRowView : MonoBehaviour,
         return $"{FactoryShift.WrapHour(hour):00}:00";
     }
 
-    private static string NicifyName(string name)
-    {
-        if (string.IsNullOrEmpty(name)) return name;
-
-        var result = new System.Text.StringBuilder(name.Length + 4);
-        result.Append(name[0]);
-        for (int i = 1; i < name.Length; i++)
-        {
-            if (char.IsUpper(name[i]) && !char.IsWhiteSpace(name[i - 1]))
-            {
-                result.Append(' ');
-            }
-
-            result.Append(name[i]);
-        }
-
-        return result.ToString();
-    }
 }

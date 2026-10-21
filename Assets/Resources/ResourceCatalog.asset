@@ -1,0 +1,579 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ad22b1b00b242417929dea95cc2ae57b, type: 3}
+  m_Name: ResourceCatalog
+  m_EditorClassIdentifier: 
+  types:
+  - id: metal-ore
+    displayName: Metal ore
+    description: 
+    icon: {fileID: 0}
+  - id: metal
+    displayName: Metal
+    description: 
+    icon: {fileID: 0}
+  - id: alloy
+    displayName: Alloy
+    description: 
+    icon: {fileID: 0}
+  - id: fuel
+    displayName: Fuel
+    description: 
+    icon: {fileID: 0}
+  - id: liquid
+    displayName: Liquid
+    description: 
+    icon: {fileID: 0}
+  - id: gas
+    displayName: Gas
+    description: 
+    icon: {fileID: 0}
+  - id: coolant
+    displayName: Coolant
+    description: 
+    icon: {fileID: 0}
+  - id: mineral
+    displayName: Mineral
+    description: 
+    icon: {fileID: 0}
+  - id: construction
+    displayName: Construction material
+    description: 
+    icon: {fileID: 0}
+  - id: organic
+    displayName: Organic material
+    description: 
+    icon: {fileID: 0}
+  - id: agricultural
+    displayName: Agricultural material
+    description: 
+    icon: {fileID: 0}
+  - id: chemical
+    displayName: Chemical
+    description: 
+    icon: {fileID: 0}
+  - id: polymer
+    displayName: Polymer
+    description: 
+    icon: {fileID: 0}
+  - id: textile
+    displayName: Textile
+    description: 
+    icon: {fileID: 0}
+  - id: food
+    displayName: Food
+    description: 
+    icon: {fileID: 0}
+  - id: component
+    displayName: Component
+    description: 
+    icon: {fileID: 0}
+  - id: manufactured
+    displayName: Manufactured goods
+    description: 
+    icon: {fileID: 0}
+  - id: nuclear
+    displayName: Nuclear material
+    description: 
+    icon: {fileID: 0}
+  resources:
+  - resource: 0
+    displayName: Iron ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 1
+    displayName: Copper ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 2
+    displayName: Wood
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - fuel
+    - organic
+  - resource: 3
+    displayName: Steel
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+    - alloy
+    - construction
+  - resource: 4
+    displayName: Oil
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - fuel
+    - liquid
+  - resource: 5
+    displayName: Water
+    description: 
+    availableFrom: 3
+    icon: {fileID: 0}
+    types:
+    - liquid
+    - coolant
+  - resource: 6
+    displayName: Carbon
+    description: 
+    availableFrom: 3
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - chemical
+  - resource: 7
+    displayName: Concrete
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - construction
+  - resource: 8
+    displayName: Gold ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 9
+    displayName: Nickel ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 10
+    displayName: Aluminum ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 11
+    displayName: Zinc ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 12
+    displayName: Coal
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - fuel
+    - mineral
+  - resource: 13
+    displayName: Stone
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - construction
+  - resource: 14
+    displayName: Limestone
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - construction
+  - resource: 15
+    displayName: Sand
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - construction
+  - resource: 16
+    displayName: Clay
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - construction
+  - resource: 17
+    displayName: Salt
+    description: 
+    availableFrom: 3
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - chemical
+  - resource: 18
+    displayName: Sulfur
+    description: 
+    availableFrom: 3
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - chemical
+  - resource: 19
+    displayName: Phosphate rock
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - mineral
+    - chemical
+  - resource: 20
+    displayName: Uranium ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+    - nuclear
+  - resource: 21
+    displayName: Lithium ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 22
+    displayName: Tin ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 23
+    displayName: Lead ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 24
+    displayName: Silver ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 25
+    displayName: Chromium ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 26
+    displayName: Titanium ore
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - metal-ore
+  - resource: 27
+    displayName: Quartz
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - mineral
+  - resource: 28
+    displayName: Natural gas
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - fuel
+    - gas
+  - resource: 29
+    displayName: Rubber latex
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - liquid
+    - organic
+    - polymer
+  - resource: 30
+    displayName: Cotton
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - agricultural
+    - organic
+    - textile
+  - resource: 31
+    displayName: Grain
+    description: 
+    availableFrom: 1
+    icon: {fileID: 0}
+    types:
+    - agricultural
+    - organic
+    - food
+  - resource: 32
+    displayName: Iron
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+    - construction
+  - resource: 33
+    displayName: Copper
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 34
+    displayName: Gold
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 35
+    displayName: Nickel
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 36
+    displayName: Aluminum
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+    - construction
+  - resource: 37
+    displayName: Zinc
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 38
+    displayName: Tin
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 39
+    displayName: Lead
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 40
+    displayName: Silver
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 41
+    displayName: Titanium
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+  - resource: 42
+    displayName: Bronze
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+    - alloy
+  - resource: 43
+    displayName: Brass
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+    - alloy
+  - resource: 44
+    displayName: Stainless steel
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - metal
+    - alloy
+    - construction
+  - resource: 45
+    displayName: Charcoal
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - fuel
+  - resource: 46
+    displayName: Coke
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - fuel
+  - resource: 47
+    displayName: Gasoline
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - fuel
+    - liquid
+  - resource: 48
+    displayName: Diesel
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - fuel
+    - liquid
+  - resource: 49
+    displayName: Lubricant
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - liquid
+    - chemical
+  - resource: 50
+    displayName: Plastic
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - polymer
+    - chemical
+  - resource: 51
+    displayName: Rubber
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - polymer
+  - resource: 52
+    displayName: Glass
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - construction
+  - resource: 53
+    displayName: Cement
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - construction
+  - resource: 54
+    displayName: Bricks
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - construction
+  - resource: 55
+    displayName: Lumber
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - construction
+    - organic
+    - fuel
+  - resource: 56
+    displayName: Paper
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - organic
+    - manufactured
+  - resource: 57
+    displayName: Chemicals
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - chemical
+  - resource: 58
+    displayName: Fertilizer
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - chemical
+    - agricultural
+  - resource: 59
+    displayName: Textiles
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - textile
+    - manufactured
+  - resource: 60
+    displayName: Food
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - food
+    - manufactured
+  - resource: 61
+    displayName: Electronic components
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - component
+    - manufactured
+  - resource: 62
+    displayName: Machinery
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - manufactured
+  - resource: 63
+    displayName: Batteries
+    description: 
+    availableFrom: 2
+    icon: {fileID: 0}
+    types:
+    - component
+    - manufactured
+  fallbackIcon: {fileID: -234602869, guid: 93911050ee83bda43bf491079f5367d9, type: 3}
+  nextResourceId: 1024
+  nextTypeId: 1

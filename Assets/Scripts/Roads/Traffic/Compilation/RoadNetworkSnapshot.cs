@@ -147,12 +147,41 @@ public readonly struct LaneConnectionRuleRecord : IEquatable<LaneConnectionRuleR
     }
 }
 
+public readonly struct LaneConnectionSourceRecord : IEquatable<LaneConnectionSourceRecord>
+{
+    public int DirectionBit { get; }
+    public int LaneIndex { get; }
+
+    public LaneConnectionSourceRecord(int directionBit, int laneIndex)
+    {
+        DirectionBit = directionBit;
+        LaneIndex = laneIndex;
+    }
+
+    public bool Equals(LaneConnectionSourceRecord other) =>
+        DirectionBit == other.DirectionBit && LaneIndex == other.LaneIndex;
+
+    public override bool Equals(object obj) =>
+        obj is LaneConnectionSourceRecord other && Equals(other);
+
+    public override int GetHashCode()
+    {
+        unchecked
+        {
+            return (DirectionBit * 397) ^ LaneIndex;
+        }
+    }
+}
+
 public sealed class IntersectionPolicyRecord
 {
     private readonly LaneConnectionRuleRecord[] _customRules;
     private readonly LaneConnectionRuleRecord[] _disabledRules;
+    private readonly LaneConnectionSourceRecord[] _explicitSourceLanes;
     private readonly ReadOnlyCollection<LaneConnectionRuleRecord> _readOnlyCustomRules;
     private readonly ReadOnlyCollection<LaneConnectionRuleRecord> _readOnlyDisabledRules;
+    private readonly ReadOnlyCollection<LaneConnectionSourceRecord>
+        _readOnlyExplicitSourceLanes;
 
     public ControlledNodeId Id { get; }
     public Vector2Int GridPosition { get; }
@@ -161,8 +190,14 @@ public sealed class IntersectionPolicyRecord
     public int PriorityDirectionBitA { get; }
     public int PriorityDirectionBitB { get; }
     public float TrafficLightCycleSeconds { get; }
+    public float SmartTrafficLightWaitSeconds { get; }
+    public IReadOnlyList<LaneTrafficLightIndex> TrafficLightIndices { get; }
     public IReadOnlyList<LaneConnectionRuleRecord> CustomRules => _readOnlyCustomRules;
     public IReadOnlyList<LaneConnectionRuleRecord> DisabledRules => _readOnlyDisabledRules;
+    public bool UseExplicitConnections { get; }
+    public bool HasExplicitSourceLaneBaseline { get; }
+    public IReadOnlyList<LaneConnectionSourceRecord> ExplicitSourceLanes =>
+        _readOnlyExplicitSourceLanes;
 
     public IntersectionPolicyRecord(
         ControlledNodeId id,
@@ -173,7 +208,11 @@ public sealed class IntersectionPolicyRecord
         int priorityDirectionBitB,
         float trafficLightCycleSeconds,
         IReadOnlyList<LaneConnectionRuleRecord> customRules,
-        IReadOnlyList<LaneConnectionRuleRecord> disabledRules)
+        IReadOnlyList<LaneConnectionRuleRecord> disabledRules,
+        bool useExplicitConnections = false,
+        IReadOnlyList<LaneConnectionSourceRecord> explicitSourceLanes = null,
+        IReadOnlyList<LaneTrafficLightIndex> trafficLightIndices = null,
+        float smartTrafficLightWaitSeconds = IntersectionControlUtility.DefaultSmartWaitSeconds)
     {
         Id = id;
         GridPosition = gridPosition;
@@ -182,10 +221,18 @@ public sealed class IntersectionPolicyRecord
         PriorityDirectionBitA = priorityDirectionBitA;
         PriorityDirectionBitB = priorityDirectionBitB;
         TrafficLightCycleSeconds = trafficLightCycleSeconds;
+        SmartTrafficLightWaitSeconds = IntersectionControlUtility.ValidateSmartWait(smartTrafficLightWaitSeconds);
+        var signalCopy = new LaneTrafficLightIndex[trafficLightIndices != null ? trafficLightIndices.Count : 0];
+        for (int i = 0; i < signalCopy.Length; i++) signalCopy[i] = trafficLightIndices[i];
+        TrafficLightIndices = Array.AsReadOnly(signalCopy);
         _customRules = CopyRules(customRules);
         _disabledRules = CopyRules(disabledRules);
+        UseExplicitConnections = useExplicitConnections;
+        HasExplicitSourceLaneBaseline = explicitSourceLanes != null;
+        _explicitSourceLanes = CopySources(explicitSourceLanes);
         _readOnlyCustomRules = Array.AsReadOnly(_customRules);
         _readOnlyDisabledRules = Array.AsReadOnly(_disabledRules);
+        _readOnlyExplicitSourceLanes = Array.AsReadOnly(_explicitSourceLanes);
     }
 
     private static LaneConnectionRuleRecord[] CopyRules(
@@ -194,6 +241,17 @@ public sealed class IntersectionPolicyRecord
         if (source == null || source.Count == 0) return Array.Empty<LaneConnectionRuleRecord>();
 
         var copy = new LaneConnectionRuleRecord[source.Count];
+        for (int i = 0; i < source.Count; i++) copy[i] = source[i];
+        return copy;
+    }
+
+    private static LaneConnectionSourceRecord[] CopySources(
+        IReadOnlyList<LaneConnectionSourceRecord> source)
+    {
+        if (source == null || source.Count == 0)
+            return Array.Empty<LaneConnectionSourceRecord>();
+
+        var copy = new LaneConnectionSourceRecord[source.Count];
         for (int i = 0; i < source.Count; i++) copy[i] = source[i];
         return copy;
     }

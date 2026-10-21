@@ -20,6 +20,11 @@ public sealed class PlayerViewModeManager : MonoBehaviour
 
     public PlayerViewMode CurrentViewMode { get; private set; } = PlayerViewMode.Normal;
     public event Action<PlayerViewMode> ViewModeChanged;
+    public bool TrafficNodeViewEnabled { get; private set; }
+    public event Action<bool> TrafficNodeViewChanged;
+    [SerializeField] private TrafficNodeViewStyle trafficNodeAppearance = TrafficNodeViewStyle.Default;
+    [SerializeField] private IntersectionBuilderStyle intersectionBuilderAppearance = IntersectionBuilderStyle.Default;
+    [SerializeField] private IntersectionControlPanel intersectionControlPanel;
 
     private void Awake()
     {
@@ -36,6 +41,77 @@ public sealed class PlayerViewModeManager : MonoBehaviour
     public void SetOverviewView() => SetViewMode(PlayerViewMode.Overview);
     public void SetTrafficView() => SetViewMode(PlayerViewMode.Traffic);
 
+    private void Start()
+    {
+        trafficNodeAppearance = trafficNodeAppearance.Validated();
+        var overlay = GetComponent<TrafficNodeViewOverlay>();
+        if (overlay == null) overlay = gameObject.AddComponent<TrafficNodeViewOverlay>();
+        overlay.Initialize(this, TrafficSystemBackend.Instance, trafficNodeAppearance);
+        var builder = GetComponent<IntersectionBuilderTool>();
+        if (builder == null) builder = gameObject.AddComponent<IntersectionBuilderTool>();
+        if (intersectionControlPanel == null)
+        {
+            intersectionControlPanel = FindFirstObjectByType<IntersectionControlPanel>(
+                FindObjectsInactive.Include);
+        }
+        builder.ApplyAppearance(GetIntersectionBuilderAppearance());
+        builder.Initialize(this, TrafficSystemBackend.Instance, CameraController.Instance, overlay);
+        if (intersectionControlPanel != null)
+        {
+            intersectionControlPanel.Initialize(
+                this, builder, intersectionBuilderAppearance);
+        }
+        else
+        {
+            Debug.LogWarning(
+                "The authored Intersection Control Panel is missing. Use " +
+                "Tools/Mini Colonies/Install Intersection Control Panel.",
+                this);
+        }
+        var lightOverlay = GetComponent<IntersectionTrafficLightOverlay>();
+        if (lightOverlay == null) lightOverlay = gameObject.AddComponent<IntersectionTrafficLightOverlay>();
+        lightOverlay.Initialize(TrafficSystemBackend.Instance, intersectionBuilderAppearance);
+    }
+
+    private void OnValidate()
+    {
+        trafficNodeAppearance = trafficNodeAppearance.Validated();
+        intersectionBuilderAppearance = intersectionBuilderAppearance.Validated();
+    }
+
+    public void RefreshIntersectionBuilderAppearance()
+    {
+        intersectionBuilderAppearance = intersectionBuilderAppearance.Validated();
+        GetComponent<IntersectionBuilderTool>()?.ApplyAppearance(GetIntersectionBuilderAppearance());
+        intersectionControlPanel?.ApplyAppearance(intersectionBuilderAppearance);
+        GetComponent<IntersectionTrafficLightOverlay>()?.ApplyAppearance(intersectionBuilderAppearance);
+    }
+
+    private IntersectionBuilderStyle GetIntersectionBuilderAppearance()
+    {
+        var style = intersectionBuilderAppearance.Validated();
+        if (style.trafficLightIndexFont == null && intersectionControlPanel != null)
+            style.trafficLightIndexFont = intersectionControlPanel.GameFont;
+        return style;
+    }
+
+    // Called explicitly by the Inspector after a style edit, never polled.
+    public void RefreshTrafficNodeAppearance()
+    {
+        trafficNodeAppearance = trafficNodeAppearance.Validated();
+        GetComponent<TrafficNodeViewOverlay>()?.ApplyAppearance(trafficNodeAppearance);
+    }
+
+    public void ToggleTrafficNodeView() => SetTrafficNodeView(!TrafficNodeViewEnabled);
+
+    public void SetTrafficNodeView(bool enabled)
+    {
+        enabled &= CurrentViewMode == PlayerViewMode.Traffic;
+        if (TrafficNodeViewEnabled == enabled) return;
+        TrafficNodeViewEnabled = enabled;
+        TrafficNodeViewChanged?.Invoke(enabled);
+    }
+
     public void SetViewMode(PlayerViewMode mode)
     {
         if (mode != PlayerViewMode.Normal &&
@@ -48,6 +124,7 @@ public sealed class PlayerViewModeManager : MonoBehaviour
 
         // Publish the new permissions before cancellation callbacks run.
         CurrentViewMode = mode;
+        if (mode != PlayerViewMode.Traffic) SetTrafficNodeView(false);
         if (!AllowsGameplayActions)
         {
             RoadBuilderInput.Instance?.TryCancelActivePlacement();

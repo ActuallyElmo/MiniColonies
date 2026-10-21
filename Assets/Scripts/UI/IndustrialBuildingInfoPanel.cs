@@ -217,10 +217,11 @@ public sealed class IndustrialBuildingInfoPanel : BuildingInfoPanel
         SetText(buildingNameText, productionData.buildingName);
         SetText(
             populationText,
-            $"Workers: {building.DeliveredPops}/{building.GetTargetPopCount()}");
+            $"Assigned {productionData.WorkerRoleNamePlural}: " +
+            $"{building.DeliveredPops}/{building.GetTargetPopCount()}");
         SetText(
             incomingPopulationText,
-            $"Incoming workers: {building.ReservedIncomingPops}");
+            $"Incoming {productionData.WorkerRoleNamePlural}: {building.ReservedIncomingPops}");
         SetText(
             efficiencyText,
             $"Efficiency: {building.GetProductionEfficiency():P0}");
@@ -403,14 +404,19 @@ public sealed class IndustrialBuildingInfoPanel : BuildingInfoPanel
     private void HandleFactoryRuntimeChanged(Building building)
     {
         if (building != CurrentBuilding) return;
+        if (!(building.data is ResourceProductionBuildingData productionData)) return;
+
+        foreach (var pair in _shiftRows)
+            if (pair.Value != null) pair.Value.RefreshInputAvailability(building);
 
         SetText(
             populationText,
-            $"Workers: {building.CurrentWorkingPops}/" +
+            $"Working {productionData.WorkerRoleNamePlural}: " +
+            $"{building.CurrentWorkingPops}/" +
             $"{building.CurrentFactoryShift?.DesiredPops ?? 0}");
         SetText(
             incomingPopulationText,
-            $"Incoming workers: {building.PreparedIncomingPops}");
+            $"Incoming {productionData.WorkerRoleNamePlural}: {building.PreparedIncomingPops}");
         SetText(
             efficiencyText,
             $"Efficiency: {building.CurrentFactoryEfficiency:P0}");
@@ -437,7 +443,8 @@ public sealed class IndustrialBuildingInfoPanel : BuildingInfoPanel
         SetText(titleText, productionData.buildingName);
         SetText(
             summaryText,
-            $"Workers {building.DeliveredPops}/{building.GetTargetPopCount()}" +
+            $"Assigned {productionData.WorkerRoleNamePlural}: " +
+            $"{building.DeliveredPops}/{building.GetTargetPopCount()}" +
             $"   •   Incoming {building.ReservedIncomingPops}" +
             $"   •   Efficiency {building.GetProductionEfficiency():P0}");
         SetText(

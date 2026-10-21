@@ -128,7 +128,6 @@ internal static class TrafficGraphCompilerStages
     private const float IntersectionStopLinePaddingUnits = 0.05f;
     private const float MaximumNodePullback = 0.95f;
     private const float MinimumBoundarySeparationUnits = 0.15f;
-    private const int MovementCurveSamples = 12;
     private const int LaneCenterlineSmoothingIterations = 3;
     private const float LaneChangeLengthUnits = 0.8f;
     private const float MinimumLaneChangeLengthUnits = 0.45f;
@@ -1294,7 +1293,7 @@ internal static class TrafficGraphCompilerStages
         context.Source.TryGetIntersectionPolicy(
             cell,
             out IntersectionPolicyRecord policy);
-        if (policy != null && policy.CustomRules.Count > 0)
+        if (policy != null && (policy.UseExplicitConnections || policy.CustomRules.Count > 0))
         {
             for (int i = 0; i < policy.CustomRules.Count; i++)
             {
@@ -1333,6 +1332,22 @@ internal static class TrafficGraphCompilerStages
                     i);
             }
 
+            if (policy.HasExplicitSourceLaneBaseline)
+            {
+                var newIncoming = new List<LaneDraft>();
+                for (int i = 0; i < incoming.Count; i++)
+                {
+                    if (!IsKnownExplicitSource(policy, incoming[i]))
+                        newIncoming.Add(incoming[i]);
+                }
+                GenerateDefaultIntersectionMovements(
+                    context,
+                    cell,
+                    newIncoming,
+                    outgoing,
+                    policy);
+            }
+
             RejectUnmappedIncomingLanes(
                 context,
                 cell,
@@ -1341,6 +1356,27 @@ internal static class TrafficGraphCompilerStages
             return;
         }
 
+        GenerateDefaultIntersectionMovements(
+            context,
+            cell,
+            incoming,
+            outgoing,
+            policy);
+
+        RejectUnmappedIncomingLanes(
+            context,
+            cell,
+            incoming,
+            TrafficMovementKind.Intersection);
+    }
+
+    private static void GenerateDefaultIntersectionMovements(
+        TrafficGraphCompilationContext context,
+        Vector2Int cell,
+        List<LaneDraft> incoming,
+        List<LaneDraft> outgoing,
+        IntersectionPolicyRecord policy)
+    {
         List<List<LaneDraft>> incomingLegs = GroupByEndLeg(incoming);
         List<List<LaneDraft>> outgoingLegs = GroupByStartLeg(outgoing);
         for (int inIndex = 0; inIndex < incomingLegs.Count; inIndex++)
@@ -1396,12 +1432,22 @@ internal static class TrafficGraphCompilerStages
                 }
             }
         }
+    }
 
-        RejectUnmappedIncomingLanes(
-            context,
-            cell,
-            incoming,
-            TrafficMovementKind.Intersection);
+    private static bool IsKnownExplicitSource(
+        IntersectionPolicyRecord policy,
+        LaneDraft lane)
+    {
+        for (int i = 0; i < policy.ExplicitSourceLanes.Count; i++)
+        {
+            LaneConnectionSourceRecord source = policy.ExplicitSourceLanes[i];
+            if (source.DirectionBit == lane.EndLegDirectionBit &&
+                source.LaneIndex == lane.LaneOrdinal)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void AddMovement(
@@ -1858,7 +1904,10 @@ internal static class TrafficGraphCompilerStages
                 policy != null ? policy.TrafficLightCycleSeconds : 0f,
                 incoming,
                 outgoing,
-                movements));
+                movements,
+                policy?.TrafficLightIndices,
+                policy != null ? policy.SmartTrafficLightWaitSeconds :
+                    IntersectionControlUtility.DefaultSmartWaitSeconds));
         }
 
         result.Sort((left, right) => left.Id.CompareTo(right.Id));
@@ -2505,40 +2554,8 @@ internal static class TrafficGraphCompilerStages
             movement.TargetDistanceUnits,
             out Vector3 targetDirection);
 
-        return BuildBezierMovementCurve(
-            start,
-            end,
-            sourceDirection,
-            targetDirection,
-            MovementCurveSamples);
-    }
-
-    private static List<Vector3> BuildBezierMovementCurve(
-        Vector3 start,
-        Vector3 end,
-        Vector3 sourceDirection,
-        Vector3 targetDirection,
-        int sampleCount)
-    {
-        sampleCount = Mathf.Max(2, sampleCount);
-        float controlDistance = Mathf.Max(
-            0.1f,
-            Vector3.Distance(start, end) * 0.4f);
-        Vector3 controlA = start + sourceDirection * controlDistance;
-        Vector3 controlB = end - targetDirection * controlDistance;
-
-        var result = new List<Vector3>(sampleCount);
-        for (int i = 0; i < sampleCount; i++)
-        {
-            float t = (float)i / (sampleCount - 1);
-            float oneMinusT = 1f - t;
-            result.Add(
-                oneMinusT * oneMinusT * oneMinusT * start +
-                3f * oneMinusT * oneMinusT * t * controlA +
-                3f * oneMinusT * t * t * controlB +
-                t * t * t * end);
-        }
-
+        var result = new List<Vector3>(TrafficMovementCurve.SampleCount);
+        TrafficMovementCurve.AppendSamples(result, start, end, sourceDirection, targetDirection);
         return result;
     }
 
@@ -2546,29 +2563,7 @@ internal static class TrafficGraphCompilerStages
         IReadOnlyList<Vector3> samples,
         float distance,
         out Vector3 direction)
-    {
-        float totalLength = CalculatePolylineLength(samples);
-        float remaining = Mathf.Clamp(distance, 0f, totalLength);
-        for (int i = 1; i < samples.Count; i++)
-        {
-            Vector3 segment = samples[i] - samples[i - 1];
-            float segmentLength = segment.magnitude;
-            if (segmentLength <= 0.000001f) continue;
-            if (remaining <= segmentLength)
-            {
-                direction = segment / segmentLength;
-                return samples[i - 1] +
-                       direction * remaining;
-            }
-            remaining -= segmentLength;
-        }
-
-        direction = samples.Count > 1
-            ? (samples[samples.Count - 1] -
-               samples[samples.Count - 2]).normalized
-            : Vector3.forward;
-        return samples[samples.Count - 1];
-    }
+        => TrafficMovementCurve.SampleAtDistance(samples, distance, out direction);
 
     private static float CalculatePolylineLength(
         IReadOnlyList<Vector3> samples)

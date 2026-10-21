@@ -18,38 +18,90 @@ MonoBehaviour:
   - localPosition: {x: 1, y: 0}
     isPort: 1
     portType: 3
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 2, y: 0}
     isPort: 1
     portType: 8
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 0, y: 0}
     isPort: 0
     portType: 0
+    allowedGrounds: []
+    allowedTileTypes:
+    - kind: 4
+      resource: 7
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 1, y: 1}
     isPort: 0
     portType: 0
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 2, y: 1}
     isPort: 0
     portType: 0
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 0, y: 1}
     isPort: 1
     portType: 6
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
+  ranges: []
   industrialVehiclesStorageSpace: 12
   shiftDuration: 6
+  workerRoleName: factory worker
+  workerRoleNamePlural: factory workers
   popRequiredForMaxEfficiency: 10
   resources:
   - resourceType: 0
+    inputId: 4092045563fd4808a6b8c03b28024768
+    inputName: 
+    useResourceTypes: 1
+    requiredTypes:
+    - metal-ore
     storageCapacity: 1500
     amountAtMaximumEfficiency: 60
     direction: 0
-  - resourceType: 1
+  - resourceType: 12
+    inputId: d83dcf65b94d40458c26a0868c9f3f7e
+    inputName: 
+    useResourceTypes: 0
+    requiredTypes: []
     storageCapacity: 1500
     amountAtMaximumEfficiency: 120
     direction: 0
   - resourceType: 3
+    inputId: 
+    inputName: 
+    useResourceTypes: 0
+    requiredTypes: []
     storageCapacity: 1500
     amountAtMaximumEfficiency: 120
     direction: 1
   - resourceType: 2
+    inputId: 
+    inputName: 
+    useResourceTypes: 0
+    requiredTypes: []
     storageCapacity: 1500
     amountAtMaximumEfficiency: 180
     direction: 1

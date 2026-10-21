@@ -1,0 +1,42 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 67f1555eee6543cbafebc738717e5b2b, type: 3}
+  m_Name: Copper
+  m_EditorClassIdentifier: 
+  resourceType: 1
+  displayName: Copper
+  shape: 0
+  depth: 0
+  unlimited: 0
+  depositGrowth: 0
+  depositCompactness: 1
+  depositIrregularity: 0.65
+  depositElongation: 4
+  depositBranchChance: 0.2
+  randomizeDepositDirection: 1
+  depositGrowthAngle: 0
+  terrainMaterial: {fileID: 2100000, guid: 9d701586744d9844bb5b87660bcb2282, type: 2}
+  terrainTint: {r: 0.65, g: 0.29999998, b: 0.12999997, a: 1}
+  terrainTransitionStyle: 0
+  terrainBlendWidth: 0.396
+  terrainBlendAmount: 0.47
+  terrainBlendRandomness: 0.65
+  terrainBlendNoiseSize: 1
+  terrainEdgeRoundness: 0.125
+  terrainAppearanceVersion: 1
+  prefabVariants:
+  - {fileID: 1893869893935121514, guid: e499328820d7dc74ba68a950e84478d5, type: 3}
+  - {fileID: 3179095489510919456, guid: c7f52922e67a73a489c7b4b38c0eb23b, type: 3}
+  depositPrefabChance: 0.1
+  prefabScaleRange: {x: 0.8, y: 1.2}
+  randomYaw: 1
+  prefabHeightOffset: 0

@@ -24,7 +24,8 @@ public enum IntersectionRuleType
     FIFO,
     TrafficLight,
     PriorityRoad,
-    RuleOfWay
+    RuleOfWay,
+    SmartTrafficLight
 }
 
 public enum TrafficTurnType
@@ -75,6 +76,9 @@ public class TrafficEdge
     public List<Vector3> waypoints = new List<Vector3>();
     public List<float> cumulativeWaypointDistances = new List<float>();
     public float totalLength;
+    internal readonly List<CornerSpeedPlanner.Sample> CornerSamples = new List<CornerSpeedPlanner.Sample>();
+    internal Vector3 CornerEntryDirection;
+    internal Vector3 CornerExitDirection;
     // Runtime occupants are kept front-most first by ConveyorTrafficManager.
     public List<VehicleAI> occupants = new List<VehicleAI>();
     public List<TrafficEdgeReservation> reservations = new List<TrafficEdgeReservation>();
@@ -116,6 +120,8 @@ public class TrafficEdge
 
     public void RecalculateLength()
     {
+        CornerSamples.Clear();
+        CornerEntryDirection = CornerExitDirection = Vector3.zero;
         cumulativeWaypointDistances.Clear();
         totalLength = 0f;
 
@@ -131,6 +137,7 @@ public class TrafficEdge
             totalLength += Vector3.Distance(waypoints[i - 1], waypoints[i]);
             cumulativeWaypointDistances.Add(totalLength);
         }
+        CornerSpeedPlanner.Rebuild(this);
     }
 
     public Vector3 GetPositionAtDistance(float distance)

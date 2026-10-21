@@ -38,8 +38,12 @@ public static class RoadNetworkSnapshotBuilder
         public int PriorityDirectionBitA;
         public int PriorityDirectionBitB;
         public float TrafficLightCycleSeconds;
+        public float SmartTrafficLightWaitSeconds;
+        public LaneTrafficLightIndex[] TrafficLightIndices;
         public LaneConnectionRuleRecord[] CustomRules;
         public LaneConnectionRuleRecord[] DisabledRules;
+        public bool UseExplicitConnections;
+        public LaneConnectionSourceRecord[] ExplicitSourceLanes;
     }
 
     private readonly struct BuildingPortSource
@@ -172,7 +176,11 @@ public static class RoadNetworkSnapshotBuilder
                 source.PriorityDirectionBitB,
                 source.TrafficLightCycleSeconds,
                 source.CustomRules,
-                source.DisabledRules));
+                source.DisabledRules,
+                source.UseExplicitConnections,
+                source.ExplicitSourceLanes,
+                source.TrafficLightIndices,
+                source.SmartTrafficLightWaitSeconds));
         }
 
         if (diagnostics.HasErrors) return false;
@@ -275,8 +283,14 @@ public static class RoadNetworkSnapshotBuilder
                 PriorityDirectionBitA = source.PriorityDirectionBitA,
                 PriorityDirectionBitB = source.PriorityDirectionBitB,
                 TrafficLightCycleSeconds = source.TrafficLightCycleSeconds,
+                SmartTrafficLightWaitSeconds = source.SmartTrafficLightWaitSeconds,
+                TrafficLightIndices = new List<LaneTrafficLightIndex>(source.TrafficLightIndices).ToArray(),
                 CustomRules = CopyRules(source.CustomRules),
-                DisabledRules = CopyRules(source.DisabledRules)
+                DisabledRules = CopyRules(source.DisabledRules),
+                UseExplicitConnections = source.UseExplicitConnections,
+                ExplicitSourceLanes = source.HasExplicitSourceLaneBaseline
+                    ? CopySources(source.ExplicitSourceLanes)
+                    : null
             });
         }
 
@@ -402,6 +416,19 @@ public static class RoadNetworkSnapshotBuilder
 
         Array.Sort(rules, CompareRules);
         return rules;
+    }
+
+    private static LaneConnectionSourceRecord[] CopySources(
+        IReadOnlyList<LaneConnectionSource> source)
+    {
+        var sources = new LaneConnectionSourceRecord[source.Count];
+        for (int i = 0; i < source.Count; i++)
+        {
+            sources[i] = new LaneConnectionSourceRecord(
+                source[i].DirectionBit,
+                source[i].LaneIndex);
+        }
+        return sources;
     }
 
     private static int CompareCells(Vector2Int left, Vector2Int right)

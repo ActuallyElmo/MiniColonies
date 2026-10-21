@@ -9,7 +9,7 @@
   `Assets/Editor`, and automated tests are under `Assets/Tests`.
 - `Assets/Scenes/SampleScene.unity` is the scene enabled in Build Settings.
 - Read `Assets/Scripts/Architecture_Documentation.md` before changing terrain,
-  roads, buildings, traffic, vehicle routing, or simulation scheduling.
+  roads, buildings, traffic, vehicle routing, simulation timing, or scheduling.
 - The project uses URP, the new Input System, uGUI, TextMesh Pro, AI Navigation,
   Burst, and the Unity Test Framework. Check `Packages/manifest.json` before
   assuming another package is available.
@@ -69,11 +69,59 @@
   initialization, or a domain setter. Runtime behavior must still handle invalid
   data safely rather than depending only on Inspector validation.
 
+## Simulation time and speed
+
+- For every addition or change involving time, explicitly decide whether it
+  follows simulation speed or real time before implementing it. Check movement,
+  timers, coroutine waits, cooldowns, deadlines, and animations, including work
+  already in progress when the player changes speed.
+- `GameTimeManager` owns Pause/x0.5/x1/x2/x4 simulation speed and the shared clock.
+  Pause is a zero simulation multiplier; gameplay timers must stop and resume
+  without counting paused wall time, while UI and building tools stay usable.
+  Gameplay movement and delays must use `SimulationDeltaTime`,
+  `SimulationTimeSeconds`, or `WaitForSimulationSeconds` as appropriate.
+  Calendar-driven rules such as factory shifts must use the existing game-hour
+  events. Do not add a parallel clock or multiply an already scaled delta again.
+- Vehicles, traffic-light phases, production/shift progression, loading and
+  unloading, and gameplay departure/reaction delays follow simulation time.
+  Traffic rules already driven by the conveyor must consume its fixed-step
+  delta and simulation deadlines rather than Unity wall-clock time.
+- UI feedback, camera controls, placement tools, cosmetic animations, and
+  infrastructure work budgets normally retain real-time/frame-based behavior.
+  A UI display of simulation state still reads that state from its owner.
+  Document non-obvious choices, such as real-time retries for asynchronous
+  network rebuilding. Do not change Unity's `Time.timeScale` or
+  `Time.fixedDeltaTime` to implement simulation speed.
+- Preserve bounded fixed-step catch-up and the shared frame-time limit so the
+  calendar, traffic, and other simulation consumers remain coordinated after
+  slow frames. For changed timing rules, add focused coverage for supported
+  speeds and speed changes during pending work, following the validation scope
+  limits below.
+
+## UI authoring
+
+- Most UI must be authored as editable objects in a scene or saved prefab
+  assets. Layout, styling, text, and serialized references must be available to
+  edit in the Unity Editor outside Play Mode. Do not build ordinary panels,
+  buttons, or complete UI hierarchies from scratch in runtime code.
+- Dynamic UI, such as variable-length lists, should instantiate or pool authored
+  prefabs. Runtime scripts should bind data and events, update displayed state,
+  and control visibility rather than recreate the authored design.
+- Use or extend the `Tools/Mini Colonies` Editor utilities for repeatable scene
+  and prefab creation. Installation must preserve existing designer edits and
+  references, avoid duplicate controls, and never silently save over unrelated
+  pending scene edits. Keep assets and their `.meta` files together.
+- Use procedural runtime UI only when the behavior genuinely requires it, such
+  as data-derived world overlays or geometry, and explain the exception in the
+  change summary. Existing runtime-generated UI is not a precedent for making
+  new ordinary UI that way; avoid unrelated rewrites of existing UI.
+
 ## Introducing or changing features
 
 1. Establish the observable behavior and affected systems before editing. Note
    important boundary cases, state transitions, persistence needs, and failure
-   behavior.
+   behavior. For timed behavior, identify the time source; for UI, identify the
+   editable scene hierarchy or prefab that will own its presentation.
 2. Find the current owner of the state or rule. Extend that owner where
    practical; do not create a parallel manager, cache, or source of truth for
    convenience.
@@ -82,8 +130,9 @@
 4. Add or update tests at the same time as the behavior. Prefer regression tests
    that fail for the old behavior and pass for the new behavior.
 5. Check serialized references, prefab/scene wiring, lifecycle cleanup, and
-   compatibility with existing assets. Scene-dependent changes require an
-   Editor or Play Mode smoke check, not only a C# unit test.
+   compatibility with existing assets. Require an Editor or Play Mode smoke
+   check only when the change directly edits a scene/prefab or its correctness
+   cannot be established without Unity lifecycle or frame progression.
 6. Update `Assets/Scripts/Architecture_Documentation.md` when ownership,
    authoritative data flow, or a major workflow changes.
 
@@ -118,8 +167,7 @@ Use Unity's Test Runner as the authoritative test runner. Do not treat
 compilation and tests.
 
 In the Editor, use **Window > General > Test Runner**, run the relevant EditMode
-fixture first, and then run the full EditMode suite for changes that affect
-shared systems.
+fixture first. A focused fixture is the default completion check.
 
 For a Windows batch run, set `$unityEditor` to the Unity executable for exactly
 `6000.0.76f1`, then run:
@@ -136,14 +184,38 @@ a second Unity process against the project while the Editor has it open. If the
 matching Unity executable is unavailable, report that tests were not run rather
 than silently using another editor version.
 
+### Validation time and scope limits
+
+- Keep automated validation proportional to the change. Prefer script
+  compilation plus the narrowest relevant EditMode fixture.
+- Do not copy the project to a temporary directory to work around an open Unity
+  Editor, test discovery, licensing, or locking. Do not launch a second Unity
+  instance when this project is already open.
+- Do not relocate tests, create temporary test assemblies, or modify project
+  structure solely to make an automated validation command run. Report the
+  discovery or environment limitation instead.
+- A focused automated test command has a default time budget of two minutes.
+  If it stalls, stop it, inspect the available log once, and report the blocked
+  validation. Do not repeatedly retry the same command or escalate to broader
+  suites as a workaround.
+- Run the full EditMode suite only when the user explicitly requests it, for a
+  release/pre-merge validation task, or when a broad foundational change has no
+  reliable focused fixture. A file touching traffic, roads, buildings, time,
+  input, or another shared system does not by itself require the full suite.
+- Run Play Mode tests only when behavior depends on frame progression,
+  coroutines, physics, scene loading, or real lifecycle ordering and a focused
+  EditMode test cannot cover the risk. Prefer one focused Play Mode fixture or a
+  concise manual smoke-check instruction over a broad Play Mode run.
+- Do not add integration tests for wiring that is already exercised by an
+  existing scene smoke check. Add tests for durable game rules and regressions,
+  not to maximize test count for a small change.
+
 After any C# change:
 
 - Confirm Unity script compilation has no errors.
 - Run the narrowest relevant fixture while iterating.
-- Run the full EditMode suite before completion when the change affects shared
-  simulation, buildings, roads, traffic, routing, time, or input behavior.
-- Run an appropriate Play Mode or manual scene smoke check for scene/UI/input/
-  lifecycle changes.
+- Apply the validation time and scope limits above before considering a full
+  suite or Play Mode run.
 - Report the commands or Test Runner scope used, the result, and any validation
   that could not be performed.
 

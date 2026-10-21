@@ -34,6 +34,11 @@ public class ConveyorTrafficManager : MonoBehaviour
 
     public static ConveyorTrafficManager Instance { get; private set; }
 
+    [Header("Cornering")]
+    [SerializeField, Range(0f, 0.6f)]
+    [Tooltip("Maximum proportional speed reduction at tight corners. Zero disables corner slowing.")]
+    private float maximumCornerSlowdown = 0.3f;
+
     private readonly List<VehicleAI> _activeVehicles = new List<VehicleAI>();
     private readonly HashSet<TrafficEdge> _activeEdges = new HashSet<TrafficEdge>();
     private readonly List<TrafficEdge> _tickEdges = new List<TrafficEdge>();
@@ -45,7 +50,8 @@ public class ConveyorTrafficManager : MonoBehaviour
     private readonly TrafficReservationService _reservationService =
         new TrafficReservationService();
     private readonly TrafficSimulationClock _simulationClock =
-        new TrafficSimulationClock();
+        new TrafficSimulationClock(maxStepsPerFrame: 16);
+    private float _simulationSeconds;
     private readonly TacticalLanePlanner _tacticalLanePlanner =
         new TacticalLanePlanner();
     private readonly HashSet<Vector2Int> _dirtyRouteCells = new HashSet<Vector2Int>();
@@ -91,7 +97,10 @@ public class ConveyorTrafficManager : MonoBehaviour
 
     private void Update()
     {
-        int steps = _simulationClock.Accumulate(Time.deltaTime);
+        // Preserve the accumulator and visual pose while paused, including any
+        // remaining catch-up step. Resume from the same simulation state.
+        if (GameTimeManager.SimulationDeltaTime <= 0f) return;
+        int steps = _simulationClock.Accumulate(GameTimeManager.SimulationDeltaTime);
         for (int i = 0; i < steps; i++)
         {
             _tickStopwatch.Restart();
@@ -598,13 +607,16 @@ public class ConveyorTrafficManager : MonoBehaviour
 
     private void Tick(float deltaTime)
     {
-        if (_activeVehicles.Count == 0) return;
-        _vehiclesTickedThisStep.Clear();
-
+        _simulationSeconds += deltaTime;
         if (TrafficSystemBackend.Instance != null)
         {
             TrafficSystemBackend.Instance.TickIntersectionControllers(deltaTime);
         }
+
+        // Signal phases belong to the simulation clock and continue advancing
+        // even when no vehicle currently occupies the traffic graph.
+        if (_activeVehicles.Count == 0) return;
+        _vehiclesTickedThisStep.Clear();
 
         _tickEdges.Clear();
         foreach (TrafficEdge edge in _activeEdges)
@@ -736,6 +748,10 @@ public class ConveyorTrafficManager : MonoBehaviour
         }
 
         float desiredSpeed = Mathf.Min(vehicle.GetMaximumSpeedUnitsPerSecond(), edge.speedLimit);
+        desiredSpeed = CornerSpeedPlanner.GetDesiredSpeed(vehicle.conveyorRoute.ManagedEdges,
+            vehicle.conveyorRouteEdgeIndex, currentDistance, desiredSpeed,
+            vehicle.GetDecelerationUnitsPerSecondSquared(), vehicle.GetMaximumJerkUnitsPerSecondCubed(),
+            maximumCornerSlowdown);
         if (mustStopAtLimit)
         {
             if (blockedByIntersectionEntry)
@@ -765,7 +781,14 @@ public class ConveyorTrafficManager : MonoBehaviour
             desiredSpeed = Mathf.Min(desiredSpeed, stoppingSpeed);
         }
 
-        if (!mustStopAtLimit && vehicle.trafficWasBlocked && !DriverReactionReady(vehicle))
+        // A leader farther along the route is still a following constraint,
+        // but does not prevent restarting. Consume the reaction delay before
+        // moving, rather than carrying it to the intersection boundary.
+        bool hasRoomToResume = !mustStopAtLimit || distanceToLimit > StopPositionEpsilon;
+        bool waitingForDriverReaction = hasRoomToResume &&
+                                        vehicle.trafficWasBlocked &&
+                                        !DriverReactionReady(vehicle);
+        if (waitingForDriverReaction)
         {
             desiredSpeed = 0f;
             maxDistance = vehicle.conveyorDistanceOnEdge;
@@ -809,7 +832,13 @@ public class ConveyorTrafficManager : MonoBehaviour
         bool stoppedInTraffic = mustStopAtLimit &&
                                 vehicle.conveyorCurrentSpeed <= TrafficStuckSpeedThreshold &&
                                 nextDistance <= currentDistance + TrafficStuckDistanceEpsilon;
-        if (stoppedInTraffic)
+        // A player-authored smart wait may exceed the deadlock recovery timeout.
+        // Red-light waiting is intentional; a blocked green still needs recovery.
+        bool waitingForSmartGreen = nextRouteEdge != null &&
+            nextRouteEdge.exitController is TrafficLightIntersectionController signal &&
+            signal.RuleType == IntersectionRuleType.SmartTrafficLight &&
+            !signal.IsGreenForLane(nextRouteEdge.fromDirectionBit, nextRouteEdge.fromLaneIndex);
+        if (stoppedInTraffic && !waitingForSmartGreen)
         {
             vehicle.trafficStationaryTime += deltaTime;
             if (vehicle.trafficStationaryTime >= TrafficStuckSecondsBeforeRespawn)
@@ -823,7 +852,7 @@ public class ConveyorTrafficManager : MonoBehaviour
             vehicle.trafficStationaryTime = 0f;
         }
 
-        if (nextDistance >= targetDistanceOnEdge - 0.001f)
+        if (!waitingForDriverReaction && nextDistance >= targetDistanceOnEdge - 0.001f)
         {
             if (IsOnFinalEdge(vehicle))
             {
@@ -1120,10 +1149,10 @@ public class ConveyorTrafficManager : MonoBehaviour
 
         if (vehicle.followingReactionReleaseTime <= 0f)
         {
-            vehicle.followingReactionReleaseTime = Time.time + reactionTime;
+            vehicle.followingReactionReleaseTime = _simulationSeconds + reactionTime;
         }
 
-        if (Time.time < vehicle.followingReactionReleaseTime)
+        if (_simulationSeconds < vehicle.followingReactionReleaseTime)
         {
             waitingForLaunchReaction = true;
             return observedSpeed;
@@ -1299,6 +1328,14 @@ public class ConveyorTrafficManager : MonoBehaviour
         float insertionDistance = Mathf.Max(0f, remainderDistance);
         TrafficEdge followingEdge = nextIndex + 1 < route.ManagedEdges.Count ? route.ManagedEdges[nextIndex + 1] : null;
         IIntersectionController enteringController = next != null && next.kind == TrafficEdgeKind.IntersectionMovement ? next.exitController : null;
+
+        if (enteringController is TrafficLightIntersectionController light &&
+            light.RuleType == IntersectionRuleType.SmartTrafficLight && current != null)
+        {
+            float stopLine = GetBlockedTransitionStopDistance(vehicle, current, next, current.totalLength);
+            light.ObserveApproach(vehicle, next, vehicle.conveyorCurrentSpeed <= 0.05f &&
+                vehicle.conveyorDistanceOnEdge >= stopLine - 0.1f);
+        }
 
         bool canProceed = next != null &&
                           HasEdgeSpaceAtDistance(
@@ -2122,12 +2159,20 @@ public class ConveyorTrafficManager : MonoBehaviour
     {
         if (vehicle == null || !vehicle.trafficWasBlocked) return true;
 
-        if (vehicle.trafficReleaseTime <= 0f)
+        // Reaction time is a delay when launching from a stop. Applying it
+        // after the vehicle has resumed would create another artificial stop.
+        if (vehicle.conveyorCurrentSpeed > TrafficStuckSpeedThreshold)
         {
-            vehicle.trafficReleaseTime = Time.time + Random.Range(DriverReactionDelayMin, DriverReactionDelayMax);
+            ClearTrafficBlock(vehicle);
+            return true;
         }
 
-        if (Time.time < vehicle.trafficReleaseTime)
+        if (vehicle.trafficReleaseTime <= 0f)
+        {
+            vehicle.trafficReleaseTime = _simulationSeconds + Random.Range(DriverReactionDelayMin, DriverReactionDelayMax);
+        }
+
+        if (_simulationSeconds < vehicle.trafficReleaseTime)
         {
             return false;
         }

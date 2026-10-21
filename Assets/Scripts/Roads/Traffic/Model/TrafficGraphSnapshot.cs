@@ -408,6 +408,8 @@ public sealed class ControlledNodeRecord
     public int PriorityDirectionBitA { get; }
     public int PriorityDirectionBitB { get; }
     public float TrafficLightCycleSeconds { get; }
+    public float SmartTrafficLightWaitSeconds { get; }
+    public IReadOnlyList<LaneTrafficLightIndex> TrafficLightIndices { get; }
     public IReadOnlyList<LaneId> IncomingLaneIds => _readOnlyIncomingLaneIds;
     public IReadOnlyList<LaneId> OutgoingLaneIds => _readOnlyOutgoingLaneIds;
     public IReadOnlyList<MovementId> MovementIds => _readOnlyMovementIds;
@@ -422,7 +424,9 @@ public sealed class ControlledNodeRecord
         float trafficLightCycleSeconds,
         IReadOnlyList<LaneId> incomingLaneIds,
         IReadOnlyList<LaneId> outgoingLaneIds,
-        IReadOnlyList<MovementId> movementIds)
+        IReadOnlyList<MovementId> movementIds,
+        IReadOnlyList<LaneTrafficLightIndex> trafficLightIndices = null,
+        float smartTrafficLightWaitSeconds = IntersectionControlUtility.DefaultSmartWaitSeconds)
     {
         Id = id;
         GridPosition = gridPosition;
@@ -431,6 +435,8 @@ public sealed class ControlledNodeRecord
         PriorityDirectionBitA = priorityDirectionBitA;
         PriorityDirectionBitB = priorityDirectionBitB;
         TrafficLightCycleSeconds = trafficLightCycleSeconds;
+        SmartTrafficLightWaitSeconds = IntersectionControlUtility.ValidateSmartWait(smartTrafficLightWaitSeconds);
+        TrafficLightIndices = Array.AsReadOnly(TrafficGraphRecordCopy.Copy(trafficLightIndices));
         _incomingLaneIds = TrafficGraphRecordCopy.Copy(incomingLaneIds);
         _outgoingLaneIds = TrafficGraphRecordCopy.Copy(outgoingLaneIds);
         _movementIds = TrafficGraphRecordCopy.Copy(movementIds);

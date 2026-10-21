@@ -38,6 +38,18 @@ public class CameraController : MonoBehaviour
     [Tooltip("How strongly zooming moves toward the mouse. Zooming out moves away by the same amount.")]
     public float zoomMouseBias = 0.2f;
 
+    [Header("Intersection Builder")]
+    [Min(0.01f), Tooltip("Focused orthographic size. Smaller values zoom in further. Editable while focused.")]
+    public float intersectionZoom = 4f;
+    [Min(0.01f), Tooltip("Camera focus and return smoothing time in seconds.")]
+    public float intersectionFocusSmoothTime = 0.3f;
+    public bool IsIntersectionFocused { get; private set; }
+    private bool returningFromIntersection;
+    private Vector3 focusPosition;
+    private Vector3 focusVelocity;
+    private Vector3 overviewPosition;
+    private float overviewZoom;
+
     [Header("Zoom State (Read Only)")]
     [SerializeField, Range(0f, 100f)]
     [Tooltip("Current camera zoom. 100% is fully zoomed in and 0% is fully zoomed out.")]
@@ -113,10 +125,89 @@ public class CameraController : MonoBehaviour
 
     void Update()
     {
+        if (returningFromIntersection)
+        {
+            var movementInput = new Vector2(Input.GetAxisRaw("Horizontal"), Input.GetAxisRaw("Vertical"));
+            float scroll = Input.GetAxis("Mouse ScrollWheel");
+            if (Mathf.Abs(scroll) > 0f && IsPointerOverBuildingPanel()) scroll = 0f;
+            TryInterruptIntersectionReturn(movementInput, scroll);
+        }
+        if (IsIntersectionFocused || returningFromIntersection)
+        {
+            AdvanceIntersectionFocus(Time.unscaledDeltaTime);
+            PublishZoomPercentage();
+            return;
+        }
         HandleMovement();
         HandleZoom();
         PublishZoomPercentage();
     }
+
+    public bool FocusIntersection(Vector3 center)
+    {
+        if (cam == null || !isActiveAndEnabled) return false;
+        var plane = new Plane(Vector3.up, center);
+        var ray = cam.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0f));
+        if (!plane.Raycast(ray, out float distance)) return false;
+        if (!IsIntersectionFocused && !returningFromIntersection)
+        {
+            overviewPosition = transform.position;
+            overviewZoom = cam.orthographicSize;
+        }
+        focusPosition = transform.position + center - ray.GetPoint(distance);
+        targetZoom = PositiveFinite(intersectionZoom, 4f);
+        IsIntersectionFocused = true;
+        returningFromIntersection = false;
+        currentVelocity = focusVelocity = Vector3.zero;
+        zoomDampVelocity = 0f;
+        hasZoomBiasPosition = false;
+        return true;
+    }
+
+    public void ReleaseIntersectionFocus()
+    {
+        if (!IsIntersectionFocused) return;
+        IsIntersectionFocused = false;
+        returningFromIntersection = true;
+        focusPosition = overviewPosition;
+        targetZoom = Mathf.Clamp(overviewZoom, activeMinZoom, activeMaxZoom);
+        focusVelocity = Vector3.zero;
+        zoomDampVelocity = 0f;
+    }
+
+    public bool TryInterruptIntersectionReturn(Vector2 movementInput, float zoomInput)
+    {
+        if (!returningFromIntersection ||
+            (movementInput.sqrMagnitude <= 0.0001f && Mathf.Abs(zoomInput) <= 0.0001f)) return false;
+        returningFromIntersection = false;
+        currentVelocity = focusVelocity = Vector3.zero;
+        zoomDampVelocity = 0f;
+        hasZoomBiasPosition = false;
+        // Keep the current view instead of finishing the old return zoom.
+        targetZoom = Mathf.Clamp(cam.orthographicSize, activeMinZoom, activeMaxZoom);
+        return true;
+    }
+
+    private void AdvanceIntersectionFocus(float deltaTime)
+    {
+        if (!IsIntersectionFocused && !returningFromIntersection) return;
+        if (IsIntersectionFocused) targetZoom = PositiveFinite(intersectionZoom, 4f);
+        float smoothTime = PositiveFinite(intersectionFocusSmoothTime, 0.3f);
+        transform.position = Vector3.SmoothDamp(transform.position, focusPosition,
+            ref focusVelocity, smoothTime, Mathf.Infinity, deltaTime);
+        cam.orthographicSize = Mathf.SmoothDamp(cam.orthographicSize, targetZoom,
+            ref zoomDampVelocity, smoothTime, Mathf.Infinity, deltaTime);
+        if (returningFromIntersection && (transform.position - focusPosition).sqrMagnitude < 0.0001f &&
+            Mathf.Abs(cam.orthographicSize - targetZoom) < 0.001f)
+        {
+            transform.position = focusPosition;
+            cam.orthographicSize = targetZoom;
+            returningFromIntersection = false;
+        }
+    }
+
+    private static float PositiveFinite(float value, float fallback) =>
+        float.IsNaN(value) || float.IsInfinity(value) || value <= 0f ? fallback : value;
 
     private void HandleMovement()
     {
@@ -207,7 +298,8 @@ public class CameraController : MonoBehaviour
         {
             GameObject hitObject = uiRaycastResults[i].gameObject;
             if (hitObject != null &&
-                hitObject.GetComponentInParent<BuildingInfoPanel>() != null)
+                (hitObject.GetComponentInParent<BuildingInfoPanel>() != null ||
+                 hitObject.GetComponentInParent<MapResourceInfoPanel>() != null))
             {
                 return true;
             }
@@ -304,6 +396,7 @@ public class CameraController : MonoBehaviour
 
     private void OnDisable()
     {
+        ReleaseIntersectionFocus();
         Shader.SetGlobalFloat(CameraZoomPercentageSetId, 0f);
     }
 
@@ -339,6 +432,7 @@ public class CameraController : MonoBehaviour
 
     private void HandleViewModeChanged(PlayerViewMode mode)
     {
+        if (mode != PlayerViewMode.Traffic) ReleaseIntersectionFocus();
         SetActiveZoomRange(mode, true);
     }
 

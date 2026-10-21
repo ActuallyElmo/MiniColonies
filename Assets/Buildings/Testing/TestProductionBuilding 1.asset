@@ -18,30 +18,83 @@ MonoBehaviour:
   - localPosition: {x: 1, y: 0}
     isPort: 1
     portType: 3
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 2, y: 0}
     isPort: 1
     portType: 8
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 0, y: 0}
     isPort: 0
     portType: 0
+    allowedGrounds: []
+    allowedTileTypes:
+    - kind: 2
+      resource: 0
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 1, y: 1}
     isPort: 0
     portType: 0
+    allowedGrounds: []
+    allowedTileTypes:
+    - kind: 1
+      resource: 0
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 2, y: 1}
     isPort: 0
     portType: 0
+    allowedGrounds: []
+    allowedTileTypes:
+    - kind: 1
+      resource: 0
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
   - localPosition: {x: 0, y: 1}
     isPort: 1
     portType: 6
+    allowedGrounds: []
+    allowedTileTypes: []
+    requiredTileTypes: []
+    footprintIconOverride: {fileID: 0}
+    requireGroundMatch: 0
+  ranges:
+  - name: Nearby copper
+    radius: 1
+    color: {r: 1, g: 0.6607619, b: 0.25, a: 0}
+    requiredTileTypes:
+    - kind: 3
+      resource: 1
   industrialVehiclesStorageSpace: 12
   shiftDuration: 6
+  workerRoleName: engineer
+  workerRoleNamePlural: engineers
   popRequiredForMaxEfficiency: 10
   resources:
   - resourceType: 0
+    inputId: 
+    inputName: 
+    useResourceTypes: 0
+    requiredTypes: []
     storageCapacity: 1500
     amountAtMaximumEfficiency: 120
     direction: 1
   - resourceType: 1
+    inputId: 
+    inputName: 
+    useResourceTypes: 0
+    requiredTypes: []
     storageCapacity: 1500
     amountAtMaximumEfficiency: 120
     direction: 1

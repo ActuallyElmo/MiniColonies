@@ -57,6 +57,10 @@ public class VehicleAI : MonoBehaviour
     private bool _assignedPopsDelivered;
     private bool _popReturnRequested;
     private int _returnHomeRouteFailures;
+    private bool _isDebugOneWayTrip;
+    private Coroutine _debugRouteSearch;
+    private TrafficSystemBackend _debugRoutingBackend;
+    private int _debugRouteGeneration;
 
     [Header("Resource Transport Assignment")]
     [SerializeField] private bool hasAssignedResourceType;
@@ -73,6 +77,7 @@ public class VehicleAI : MonoBehaviour
     public ResourceType AssignedResourceType => assignedResourceType;
     public int AssignedResourceAmount => assignedResourceAmount;
     public bool HasAssignedResourceCargo => assignedResourceAmount > 0;
+    public bool IsDebugVehicle => _isDebugOneWayTrip;
     public bool CanReceivePopTransportAssignment =>
         currentState == VehicleState.Idle &&
         !isConveyorMoving &&
@@ -97,6 +102,113 @@ public class VehicleAI : MonoBehaviour
         homeBuilding = home;
         vehicleData = data;
         gameObject.SetActive(false); 
+    }
+
+    public void InitializeDebugVehicle(PopTransportVehicleData data)
+    {
+        homeBuilding = null;
+        targetBuilding = null;
+        vehicleData = data;
+        currentState = VehicleState.Outbound;
+        _activeNetwork = null;
+        _assignedPopFactory = null;
+        _assignedPopCount = 0;
+        _assignedPopsDelivered = false;
+        _popReturnRequested = false;
+        _isDebugOneWayTrip = true;
+        gameObject.SetActive(true);
+    }
+
+    public void BeginDebugFactoryTrip()
+    {
+        if (!_isDebugOneWayTrip || vehicleData == null || !isActiveAndEnabled) return;
+        StopDebugRouteSearch();
+        _debugRoutingBackend = TrafficSystemBackend.Instance;
+        if (_debugRoutingBackend != null)
+            _debugRoutingBackend.OnTrafficNetworkReady += RetryDebugRouteAfterPublication;
+        currentState = VehicleState.Outbound;
+        _debugRouteSearch = StartCoroutine(FindDebugFactoryRoute(_debugRouteGeneration));
+    }
+
+    private IEnumerator FindDebugFactoryRoute(int generation)
+    {
+        // Pathfinding is infrastructure work; wait on its callback in real frames,
+        // including while paused. Vehicle approach and driving use simulation time.
+        yield return null;
+        var graph = _debugRoutingBackend != null ? _debugRoutingBackend.CurrentTrafficGraphSnapshot : null;
+        var destinations = DebugPopVehicleSpawner.FindConnectedFactoryDestinations(
+            BuildingSystemBackend.Instance != null ? BuildingSystemBackend.Instance.GetActiveBuildings() : null,
+            GetPathingOrigin(), vehicleData, WorldManager.Instance != null ? WorldManager.Instance.cellSize : 1f,
+            graph?.BuildingPortAnchors);
+        for (int i = 0; i < destinations.Count; i++)
+        {
+            // Even a synchronous rejection (for example disabled pathfinding)
+            // must not process every factory in one frame.
+            yield return null;
+            var destination = destinations[i];
+            if (destination.Factory == null || VehiclePathRequestManager.Instance == null) continue;
+            bool complete = false;
+            TrafficRoute result = null;
+            VehiclePathRequestManager.Instance.RequestPath(this, GetWorldPositionOfPort(destination.EntryPort),
+                route =>
+                {
+                    if (this == null || generation != _debugRouteGeneration) return;
+                    result = route;
+                    complete = true;
+                }, false, default, false, destination.EntryPort, true);
+            while (!complete) yield return null;
+            if (_debugRoutingBackend == null || graph != _debugRoutingBackend.CurrentTrafficGraphSnapshot) break;
+            if (destination.Factory == null || result == null || result.ManagedEdges == null ||
+                result.ManagedEdges.Count == 0) continue;
+            targetBuilding = destination.Factory;
+            _debugRouteSearch = null;
+            StopDebugRouteSearch();
+            StartConveyorRoute(result);
+            yield break;
+        }
+        _debugRouteSearch = null;
+        if (_debugRoutingBackend != null && graph != _debugRoutingBackend.CurrentTrafficGraphSnapshot)
+        {
+            BeginDebugFactoryTrip();
+            yield break;
+        }
+        const string message = "Debug car: no reachable factory entrance. Connect a factory to this road; " +
+            "the car will retry when the road network updates.";
+        Debug.LogWarning(message, this);
+        TooltipManager.Show(message, this);
+    }
+
+    private void RetryDebugRouteAfterPublication()
+    {
+        if (_debugRouteSearch == null && _isDebugOneWayTrip && isActiveAndEnabled)
+            BeginDebugFactoryTrip();
+    }
+
+    private void StopDebugRouteSearch()
+    {
+        _debugRouteGeneration++;
+        if (_debugRouteSearch != null) StopCoroutine(_debugRouteSearch);
+        _debugRouteSearch = null;
+        if (_debugRoutingBackend != null)
+            _debugRoutingBackend.OnTrafficNetworkReady -= RetryDebugRouteAfterPublication;
+        _debugRoutingBackend = null;
+        TooltipManager.Hide(this);
+    }
+
+    public void DestroyDebugVehicle()
+    {
+        if (!_isDebugOneWayTrip) return;
+        StopDebugRouteSearch();
+
+        if (ConveyorTrafficManager.Instance != null)
+        {
+            ConveyorTrafficManager.Instance.LeaveTraffic(this);
+        }
+
+        _isDebugOneWayTrip = false;
+        StopAllCoroutines();
+        if (Application.isPlaying) Destroy(gameObject);
+        else DestroyImmediate(gameObject);
     }
 
     internal void SetAssignedResourceType(ResourceType resourceType)
@@ -272,6 +384,12 @@ public class VehicleAI : MonoBehaviour
 
     public void RecallAndDeactivate()
     {
+        if (_isDebugOneWayTrip)
+        {
+            DestroyDebugVehicle();
+            return;
+        }
+
         ReturnResourceCargoToHome();
         if (ConveyorTrafficManager.Instance != null)
         {
@@ -330,6 +448,21 @@ public class VehicleAI : MonoBehaviour
 
     private void OnDisable()
     {
+        if (_isDebugOneWayTrip)
+        {
+            StopDebugRouteSearch();
+            if (_enterRouteRetryCoroutine != null)
+            {
+                StopCoroutine(_enterRouteRetryCoroutine);
+                _enterRouteRetryCoroutine = null;
+            }
+        }
+        if (_isDebugOneWayTrip && isConveyorMoving &&
+            ConveyorTrafficManager.Instance != null)
+        {
+            ConveyorTrafficManager.Instance.LeaveTraffic(this);
+        }
+
         if (vehicleData is ResourceTransportVehicleData)
         {
             if (isConveyorMoving && ConveyorTrafficManager.Instance != null)
@@ -353,6 +486,13 @@ public class VehicleAI : MonoBehaviour
 
     private void OnDestroy()
     {
+        StopDebugRouteSearch();
+        if (_isDebugOneWayTrip && isConveyorMoving &&
+            ConveyorTrafficManager.Instance != null)
+        {
+            ConveyorTrafficManager.Instance.LeaveTraffic(this);
+        }
+
         if (vehicleData is ResourceTransportVehicleData)
         {
             ReturnResourceCargoToHome();
@@ -577,7 +717,7 @@ public class VehicleAI : MonoBehaviour
     {
         while (currentState != VehicleState.Idle && gameObject.activeInHierarchy)
         {
-            yield return new WaitForSeconds(0.25f);
+            yield return GameTimeManager.WaitForSimulationSeconds(0.25f);
             if (TryEnterConveyorRoute(route))
             {
                 if (currentState == VehicleState.Inbound)
@@ -691,6 +831,12 @@ public class VehicleAI : MonoBehaviour
 
     public void RecoverFromTrafficStall()
     {
+        if (_isDebugOneWayTrip)
+        {
+            ConveyorTrafficManager.Instance?.LeaveTraffic(this);
+            BeginDebugFactoryTrip();
+            return;
+        }
         Building retryTarget = targetBuilding;
         RoadNetwork retryNetwork = _activeNetwork;
 
@@ -699,6 +845,12 @@ public class VehicleAI : MonoBehaviour
 
     private void ForceConveyorReroute()
     {
+        if (_isDebugOneWayTrip)
+        {
+            BeginDebugFactoryTrip();
+            return;
+        }
+
         RefreshActiveNetworkAfterGraphRebuild();
 
         Building targetForRoute = targetBuilding;
@@ -742,6 +894,12 @@ public class VehicleAI : MonoBehaviour
 
     private void OnDestinationReached()
     {
+        if (_isDebugOneWayTrip)
+        {
+            DestroyDebugVehicle();
+            return;
+        }
+
         if (currentState == VehicleState.Outbound)
         {
             if (vehicleData is ResourceTransportVehicleData && assignedResourceAmount > 0)
@@ -849,7 +1007,7 @@ public class VehicleAI : MonoBehaviour
 
     private IEnumerator WaitAtTarget()
     {
-        yield return new WaitForSeconds(3f);
+        yield return GameTimeManager.WaitForSimulationSeconds(3f);
 
         bool resourceVehicleFinishedWaiting =
             currentState == VehicleState.Outbound &&
@@ -871,7 +1029,7 @@ public class VehicleAI : MonoBehaviour
         if (vehicleData is PopTransportVehicleData)
         {
             CompletePopTransportReturnHome();
-            yield return new WaitForSeconds(3f);
+            yield return GameTimeManager.WaitForSimulationSeconds(3f);
 
             if (!CanReceivePopTransportAssignment)
             {
@@ -900,7 +1058,7 @@ public class VehicleAI : MonoBehaviour
             yield break;
         }
 
-        yield return new WaitForSeconds(3f);
+        yield return GameTimeManager.WaitForSimulationSeconds(3f);
         ApplyPendingAssignment();
         if (targetBuilding != null) DispatchTo(targetBuilding, _activeNetwork);
         else RecallAndDeactivate();
@@ -978,7 +1136,9 @@ public class VehicleAI : MonoBehaviour
         while (currentState != VehicleState.Idle &&
                gameObject.activeInHierarchy)
         {
-            yield return new WaitForSeconds(ReturnHomeRetryDelaySeconds);
+            // Graph compilation and path requests run on real frame budgets. Keep
+            // their bounded recovery attempts independent of simulation speed.
+            yield return new WaitForSecondsRealtime(ReturnHomeRetryDelaySeconds);
 
             if (isConveyorMoving)
             {

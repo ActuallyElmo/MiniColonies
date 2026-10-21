@@ -3,6 +3,15 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Serialization;
 
+[Serializable]
+public struct FactoryShiftInput
+{
+    public string inputId;
+    public bool hasSelection;
+    public ResourceType resourceType;
+    public int desiredAmount;
+}
+
 /// <summary>
 /// The editable requirements for one factory shift. The shift duration is
 /// owned by the factory so every shift in a factory has the same length.
@@ -26,6 +35,14 @@ public sealed class FactoryShift
     [SerializeField]
     private List<ResourceAmount> desiredResources =
         new List<ResourceAmount>();
+
+    [SerializeField]
+    private List<FactoryShiftInput> inputSelections = new List<FactoryShiftInput>();
+
+    public IReadOnlyList<FactoryShiftInput> InputSelections
+    {
+        get { EnsureResourceList(); return inputSelections; }
+    }
 
     public bool IsActive => isActive;
     public int StartHour => startHour;
@@ -161,6 +178,115 @@ public sealed class FactoryShift
         desiredResources = synchronizedResources;
     }
 
+    internal void SynchronizeInputSlots(ResourceProductionBuildingData data, ResourceCatalog catalog, bool initializeAmounts = false)
+    {
+        EnsureResourceList();
+        var synchronized = new List<FactoryShiftInput>();
+        var allowed = new List<ResourceType>();
+        if (data.resources != null)
+        {
+            for (int i = 0; i < data.resources.Count; i++)
+            {
+                ProductionResourceEntry entry = data.resources[i];
+                if (entry.direction != ProductionResourceDirection.Input) continue;
+                string id = data.GetInputId(i);
+                bool existed = TryGetInput(id, out FactoryShiftInput selection);
+                if (!existed)
+                {
+                    data.GetAllowedInputResources(i, catalog, allowed);
+                    selection = new FactoryShiftInput { inputId = id };
+                    if (allowed.Count > 0)
+                    {
+                        selection.hasSelection = true;
+                        selection.resourceType = allowed[0];
+                        bool hasLegacyAmount = false;
+                        // Migrate serialized schedules by retaining an already chosen material.
+                        for (int j = 0; j < desiredResources.Count; j++)
+                            if (allowed.Contains(desiredResources[j].resourceType))
+                            {
+                                selection.resourceType = desiredResources[j].resourceType;
+                                hasLegacyAmount = true;
+                                break;
+                            }
+                        selection.desiredAmount = initializeAmounts || !hasLegacyAmount
+                            ? entry.amountAtMaximumEfficiency : GetDesiredResourceAmount(selection.resourceType);
+                    }
+                }
+                else if (!ResourceProductionBuildingData.UsesTypes(entry) && !isActive)
+                {
+                    // A fixed input follows the factory definition, including when
+                    // the designer changes an inactive slot from categories to an item.
+                    selection.resourceType = entry.resourceType;
+                    selection.hasSelection = ResourceCatalog.IsKnownResource(entry.resourceType, catalog);
+                }
+                else if (selection.hasSelection && !ResourceProductionBuildingData.AcceptsInput(entry, selection.resourceType, catalog))
+                {
+                    // Do not silently switch a running recipe to a different material.
+                    selection.hasSelection = false;
+                }
+                selection.desiredAmount = Mathf.Clamp(selection.desiredAmount, 0, Mathf.Max(0, entry.storageCapacity));
+                synchronized.Add(selection);
+            }
+        }
+        inputSelections = synchronized;
+        RebuildDesiredResources();
+    }
+
+    public bool TryGetInput(string inputId, out FactoryShiftInput selection)
+    {
+        EnsureResourceList();
+        for (int i = 0; i < inputSelections.Count; i++)
+            if (inputSelections[i].inputId == inputId) { selection = inputSelections[i]; return true; }
+        selection = default;
+        return false;
+    }
+
+    internal void SetInputResource(string inputId, ResourceType resource)
+    {
+        for (int i = 0; i < inputSelections.Count; i++)
+        {
+            FactoryShiftInput selection = inputSelections[i];
+            if (selection.inputId != inputId) continue;
+            selection.resourceType = resource;
+            selection.hasSelection = true;
+            inputSelections[i] = selection;
+            RebuildDesiredResources();
+            return;
+        }
+    }
+
+    internal void SetInputDesiredAmount(string inputId, int amount)
+    {
+        for (int i = 0; i < inputSelections.Count; i++)
+        {
+            FactoryShiftInput selection = inputSelections[i];
+            if (selection.inputId != inputId) continue;
+            selection.desiredAmount = Mathf.Max(0, amount);
+            inputSelections[i] = selection;
+            RebuildDesiredResources();
+            return;
+        }
+    }
+
+    internal void CopyInputSelectionsFrom(FactoryShift source)
+    {
+        inputSelections = new List<FactoryShiftInput>(source.InputSelections);
+        RebuildDesiredResources();
+    }
+
+    private void RebuildDesiredResources()
+    {
+        desiredResources.Clear();
+        for (int i = 0; i < inputSelections.Count; i++)
+        {
+            FactoryShiftInput selection = inputSelections[i];
+            if (!selection.hasSelection) continue;
+            int existing = GetDesiredResourceAmount(selection.resourceType);
+            SetDesiredResourceAmount(selection.resourceType,
+                (int)Math.Min(int.MaxValue, (long)existing + selection.desiredAmount));
+        }
+    }
+
     internal static int WrapHour(int hour)
     {
         int wrappedHour = hour % GameTimeManager.HoursPerDay;
@@ -175,5 +301,6 @@ public sealed class FactoryShift
         {
             desiredResources = new List<ResourceAmount>();
         }
+        if (inputSelections == null) inputSelections = new List<FactoryShiftInput>();
     }
 }

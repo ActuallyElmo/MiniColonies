@@ -1,0 +1,57 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: PixelWaterMat
+  m_Shader: {fileID: 4800000, guid: aecfb05325164b61a798a58ab81812dc, type: 3}
+  m_Parent: {fileID: 0}
+  m_ModifiedSerializedProperties: 0
+  m_ValidKeywords: []
+  m_InvalidKeywords: []
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 1
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_LockedProperties: 
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs: []
+    m_Ints: []
+    m_Floats:
+    - _CrestStrength: 0.65
+    - _DeepOpacity: 0.96
+    - _DepthDistance: 2.5
+    - _FlowSpeed: 0.28
+    - _FoamSpeed: 0.08
+    - _FoamStrength: 0.093
+    - _FoamWidth: 0.5
+    - _LightingInfluence: 0
+    - _PixelSize: 0.1
+    - _ReflectionDistortion: 0.084
+    - _ReflectionHeight: 1.7
+    - _ReflectionStrength: 0.375
+    - _RippleContrast: 0.45
+    - _ScreenReflections: 1
+    - _ShallowOpacity: 0.65
+    - _Smoothness: 1
+    - _SpecularStrength: 0.099
+    - _WaveLength: 3.5
+    - _WaveStrength: 0.18
+    m_Colors:
+    - _CrestColor: {r: 0.31452474, g: 0.60804564, b: 0.7169812, a: 1}
+    - _DeepColor: {r: 0.055, g: 0.34, b: 0.49, a: 1}
+    - _FlowDirection: {r: 1, g: 0.35, b: 0, a: 0}
+    - _FoamColor: {r: 0.88, g: 0.98, b: 0.9, a: 1}
+    - _ReflectionDirection: {r: -0.7, g: 0.7, b: 0, a: 0}
+    - _ReflectionTint: {r: 0.72, g: 0.91, b: 0.98, a: 1}
+    - _RippleColor: {r: 0.24, g: 0.65, b: 0.73, a: 1}
+    - _ShallowColor: {r: 0.19999997, g: 0.58031785, b: 0.72156864, a: 1}
+  m_BuildTextureStacks: []
+  m_AllowLocking: 1

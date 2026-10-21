@@ -285,7 +285,7 @@ public static class FactorySchedulePanelSceneBuilder
         popsIconImage.preserveAspect = true;
         popsIconImage.raycastTarget = false;
         Layout(popsIcon, 10f, 10f);
-        AddRowLabel(popsRow.transform, "Prepared pops");
+        AddRowLabel(popsRow.transform, "Factory workers");
         Button decreasePops = ButtonObject(
             "Decrease", popsRow.transform, "−", 18f);
         TMP_Text pops = ValueText(
@@ -349,6 +349,7 @@ public static class FactorySchedulePanelSceneBuilder
         SetReference(resourceTemplate, "amountText", resourceAmount);
         SetReference(resourceTemplate, "decreaseButton", resourceDecrease);
         SetReference(resourceTemplate, "increaseButton", resourceIncrease);
+        FactoryInputSelectorSetup.EnsureSelector(resourceTemplate);
 
         SetReference(view, "layoutElement", rowElement);
         SetReference(view, "titleText", title);
@@ -363,6 +364,10 @@ public static class FactorySchedulePanelSceneBuilder
         SetReference(view, "preparationHourText", preparation);
         SetReference(view, "earlierPreparationButton", earlierPreparation);
         SetReference(view, "laterPreparationButton", laterPreparation);
+        SetReference(
+            view,
+            "workerRoleText",
+            popsRow.transform.Find("Label").GetComponent<TMP_Text>());
         SetReference(view, "desiredPopsText", pops);
         SetReference(view, "decreasePopsButton", decreasePops);
         SetReference(view, "increasePopsButton", increasePops);
